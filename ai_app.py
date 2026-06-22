@@ -2165,7 +2165,8 @@ OWNER_COMMANDS_HELP = (
     "- `/learning <on|off>` — toggle privacy-safe shared learning\n"
     "- `/instructions <text>` — set custom AI instructions (empty to clear)\n"
     "- `/knowledge clear` — wipe shared learning notes\n"
-    "- `/stats` — app stats"
+    "- `/stats` — app stats\n"
+    "- `/users` — list all accounts (email, username, plan, join date)"
 )
 
 
@@ -2248,6 +2249,34 @@ def handle_owner_command(text, user):
         conn.close()
         return (f"**Zynx stats**\n\n- Users: {users}\n- Chats: {chats}\n"
                 f"- Messages: {msgs}\n- Learning notes: {notes}\n- Model: `{get_setting('model')}`")
+
+    if cmd == "/users":
+        conn = connect()
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT id, email, username, plan, created_at FROM users ORDER BY id DESC"
+        ).fetchall()
+        conn.close()
+
+        total = len(rows)
+        if total == 0:
+            return "No users yet."
+
+        guests = sum(1 for r in rows if r["plan"] == "Guest")
+        lines = [
+            f"**Users — {total} total** ({total - guests} signed up · {guests} guest)",
+            "",
+        ]
+        shown = rows[:100]  # cap the reply length
+        for r in shown:
+            lines.append(
+                f"- `#{r['id']}` **@{r['username']}** · {r['email']} · "
+                f"{r['plan']} · joined {r['created_at']}"
+            )
+        if total > len(shown):
+            lines.append("")
+            lines.append(f"…and {total - len(shown)} more (showing newest 100).")
+        return "\n".join(lines)
 
     return f"Unknown command `{cmd}`. Try `/help`."
 
