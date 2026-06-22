@@ -1671,6 +1671,19 @@ def get_model_uses(user_id, model_key):
     return row["count"] if row else 0
 
 
+def get_all_model_uses(user_id):
+    """Today's usage for ALL models in ONE query: {model_key: count}.
+    Avoids a separate round-trip per model (costly on a remote DB)."""
+    conn = connect()
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT model_key, count FROM usage WHERE user_id=? AND use_date=?",
+        (user_id, today())
+    ).fetchall()
+    conn.close()
+    return {r["model_key"]: r["count"] for r in rows}
+
+
 def increment_model_use(user_id, model_key):
     conn = connect()
     cur = conn.cursor()
@@ -1699,12 +1712,20 @@ def refund_model_use(user_id, model_key):
     conn.close()
 
 
-def model_uses_remaining(user, model_key):
-    """(remaining, limit). limit None = unlimited (Owner)."""
+def model_uses_remaining(user, model_key, uses=None):
+    """(remaining, limit). limit None = unlimited (Owner).
+
+    Pass `uses` (a dict from get_all_model_uses) to read the count from memory
+    instead of issuing a per-call query — used to batch the sidebar/composer
+    usage lookups into a single round-trip per render.
+    """
     limit = get_model_limit(user["plan"], model_key)
     if limit is None:
         return None, None
-    used = get_model_uses(user["id"], model_key)
+    if uses is not None:
+        used = uses.get(model_key, 0)
+    else:
+        used = get_model_uses(user["id"], model_key)
     return max(0, limit - used), limit
 
 
@@ -2467,6 +2488,10 @@ if not user:
     st.session_state.user_id = None
     st.rerun()
 
+# Today's per-model usage, loaded ONCE per render (one query) and reused by the
+# sidebar meter, the composer, and Phase A — avoids a query per model per click.
+today_uses = get_all_model_uses(user["id"])
+
 if not get_gemini_keys() and not get_anthropic_key() and not get_groq_key() and not get_openrouter_key():
     st.title("Zynx")
     st.warning("No API key found. Add GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY to .streamlit/secrets.toml.")
@@ -2513,7 +2538,7 @@ with st.sidebar:
     else:
         rows_html = ""
         for mk in visible_models():
-            remaining, limit = model_uses_remaining(user, mk)
+            remaining, limit = model_uses_remaining(user, mk, uses=today_uses)
             colour = "#6b6b6b" if remaining == 0 else "var(--text)"
             rows_html += (
                 "<div style='display:flex;justify-content:space-between;"
@@ -2890,7 +2915,7 @@ with composer:
     if user and safe_get(user, "plan") == "Owner":
         meter_text = "unlimited"
     else:
-        _remaining, _limit = model_uses_remaining(user, model_key)
+        _remaining, _limit = model_uses_remaining(user, model_key, uses=today_uses)
         meter_text = f"{_remaining}/{_limit} left today"
 
     with meter:
@@ -2922,7 +2947,7 @@ if user_msg:
         st.rerun()
 
     # per-model daily limit
-    remaining, limit = model_uses_remaining(user, model_key)
+    remaining, limit = model_uses_remaining(user, model_key, uses=today_uses)
     if limit is not None and remaining <= 0:
         if user["plan"] == "Guest":
             st.error(
