@@ -8,9 +8,15 @@ app code keeps using row["col"] even though libSQL returns bare tuples.
 
 import os
 import sqlite3
+import tempfile
 
 TURSO_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
 TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+
+# Set True once we successfully open an embedded replica (local file that syncs
+# to the remote Turso primary). Reads then hit the local copy; writes are pushed
+# to the primary after each commit so they survive a server restart.
+_IS_REPLICA = False
 
 # Local DB path: env override (tests) else the app's existing file location.
 APP_DB = os.getenv("ZYNX_DB_PATH") or os.path.join(
@@ -108,6 +114,13 @@ class _Conn:
 
     def commit(self):
         self._raw.commit()
+        # Push local writes to the remote primary so they persist across server
+        # restarts (the local replica file is ephemeral on the cloud host).
+        if _IS_REPLICA:
+            try:
+                self._raw.sync()
+            except Exception:
+                pass
 
     def close(self):
         pass  # no-op: shared singleton, do not tear down
@@ -122,12 +135,32 @@ def using_turso():
 
 
 def _make_raw():
+    global _IS_REPLICA
     if using_turso():
+        import libsql  # lazy: only needed on the cloud
+
+        # Preferred: an embedded replica. A local SQLite file is kept in sync
+        # with the remote Turso primary, so every read is served locally (~1ms)
+        # instead of a transatlantic round-trip (~100ms). Writes go to the
+        # primary and are pushed on commit (see _Conn.commit).
         try:
-            import libsql  # lazy: only needed on the cloud
-            return libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-        except Exception as e:
-            raise RuntimeError(f"Zynx database unavailable (Turso): {e}") from e
+            local_path = os.getenv("ZYNX_REPLICA_PATH") or os.path.join(
+                tempfile.gettempdir(), "zynx_replica.db"
+            )
+            conn = libsql.connect(
+                local_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN
+            )
+            conn.sync()  # pull current remote state into the fresh local replica
+            _IS_REPLICA = True
+            return conn
+        except Exception:
+            # Replica unsupported/unavailable — fall back to a direct remote
+            # connection (the previous behaviour) so the app still works.
+            _IS_REPLICA = False
+            try:
+                return libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
+            except Exception as e:
+                raise RuntimeError(f"Zynx database unavailable (Turso): {e}") from e
     return sqlite3.connect(APP_DB, check_same_thread=False)
 
 
