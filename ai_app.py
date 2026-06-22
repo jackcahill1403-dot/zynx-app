@@ -2926,126 +2926,14 @@ if user_msg:
     }
     st.rerun()
 
-# -------- Phase B: a reply is pending — stream it via a worker thread --------
+# -------- Phase B: a reply is pending — stream it inline --------
 #
-# Architecture:
-#   1. The provider generator is iterated in a BACKGROUND worker thread
-#      (_stream_worker / _worker_accumulate). The worker pushes chunks onto a
-#      queue.Queue and pushes a None sentinel when the stream ends.
-#   2. A @st.fragment(run_every=0.25) micro-reruns every 250 ms while the
-#      worker is running: each tick drains available chunks into a placeholder
-#      so the spinner clears on the first token and text grows smoothly.
-#   3. On the tick that receives the sentinel, the fragment finalises and reruns.
-#
-#   (The worker also carries a threading.Event used only to tear down an
-#    orphaned worker when the user navigates to another chat mid-stream.)
-#
-#   Invariants:
-#   - add_message called EXACTLY ONCE (idempotency-guarded on finalise).
-#   - refund_model_use ONLY on provider error; no_charge suppresses it for regen.
-#   - learn_from_exchange only on clean completion.
-#   - provider success/failure flows through the per-session _stream_flags dict.
+# Simple inline streaming on the main thread: show the thinking spinner, iterate
+# the provider's chunk generator while growing the text in a placeholder, then
+# persist the reply once and rerun. No background thread and no run_every fragment
+# polling (that polling dimmed and lagged the page badly on a remote host).
 
 pending = st.session_state.get("pending")
-
-
-@st.fragment(run_every=0.25)
-def _stream_fragment(p_user_msg, p_model_key, no_charge, chat_id, ai_name_frag):
-    """Fragment that polls the worker-thread queue and renders streamed tokens.
-
-    Runs every 250 ms while a reply is streaming; each run is short so the
-    spinner clears on the first token and the text grows smoothly. Calls
-    st.stop() / st.rerun() once the worker pushes its sentinel.
-    """
-    model_id = MODELS[p_model_key]["model_id"]
-    chunk_queue = st.session_state.get("_stream_queue")
-    cancel_event = st.session_state.get("_stream_cancel_event")
-
-    if chunk_queue is None or cancel_event is None:
-        # Worker state missing (e.g. fragment fired after cleanup) — bail out.
-        st.stop()
-        return
-
-    # ----- Drain available chunks (non-blocking) -----
-    acc = st.session_state.get("_stream_acc", [])
-    sentinel_received = st.session_state.get("_stream_done", False)
-
-    while not sentinel_received:
-        try:
-            chunk = chunk_queue.get_nowait()
-        except queue.Empty:
-            break
-        if chunk is None:
-            sentinel_received = True
-        else:
-            acc.append(chunk)
-
-    st.session_state["_stream_acc"] = acc
-    st.session_state["_stream_done"] = sentinel_received
-
-    # ----- Render current state -----
-    spinner_ph = st.session_state.get("_stream_spinner_ph")
-    body_ph = st.session_state.get("_stream_body_ph")
-
-    if acc and spinner_ph is not None:
-        # First token arrived — clear the thinking spinner.
-        spinner_ph.empty()
-        st.session_state["_stream_spinner_ph"] = None  # only clear once
-
-    current_text = "".join(acc)
-    if body_ph is not None and current_text:
-        body_ph.markdown(current_text)
-
-    # ----- Finalise when the worker has pushed its sentinel -----
-    if sentinel_received:
-        # Idempotency guard: if a previous tick already persisted the message
-        # (e.g. a side-effect below raised before st.rerun() could fire), do
-        # NOT write it again. Just stop this fragment tick.
-        if st.session_state.get("_stream_finalised"):
-            st.stop()
-            return
-
-        reply = current_text.strip() or "I could not generate a response."
-        # Authoritative success flag comes from the per-session flags dict the
-        # worker thread mutates by reference (session_state is unreliable
-        # across the worker's context — see _stream_from_nonstream).
-        flags = st.session_state.get("_stream_flags") or {}
-        stream_ok = flags.get("ok", True)
-
-        # Persist exactly once, then immediately mark finalised so a re-entrant
-        # tick (if a side-effect below raises) cannot double-write.
-        add_message(chat_id, "assistant", reply)
-        st.session_state["_stream_finalised"] = True
-
-        # Side-effects are best-effort: never let them block finalisation/rerun.
-        try:
-            if stream_ok:
-                learn_from_exchange(p_user_msg)
-            elif not no_charge:
-                # Provider returned an error via the fallback path — refund the use.
-                refund_model_use(
-                    st.session_state.get("_stream_user_id"), p_model_key
-                )
-        except Exception:
-            pass
-
-        # Clean up all worker state from session.
-        for key in ("_stream_queue", "_stream_cancel_event", "_stream_acc",
-                    "_stream_done", "_stream_spinner_ph", "_stream_body_ph",
-                    "_stream_user_id", "_stream_thread", "_stream_flags",
-                    "_stream_finalised"):
-            st.session_state.pop(key, None)
-
-        # Clear pending and trigger a full app rerun to render the finalised message
-        # through the normal history loop (with action buttons).
-        st.session_state.pending = None
-        st.session_state["_last_stream_ok"] = True
-        st.rerun()
-        # st.stop() is not needed here because st.rerun() will replace the fragment.
-        return
-
-    # Not yet done — fragment auto-reruns in 250 ms (run_every=0.25).
-
 
 if pending and pending["chat_id"] == st.session_state.chat_id:
     p_user_msg = pending["user_msg"]
@@ -3053,93 +2941,52 @@ if pending and pending["chat_id"] == st.session_state.chat_id:
     model_id = MODELS[p_model_key]["model_id"]
     no_charge = pending.get("no_charge", False)  # True for regenerate (reuses prior use)
 
-    # Start the worker thread on the FIRST run for this pending (no thread yet in state).
-    if st.session_state.get("_stream_thread") is None:
-        # Build generation context.
-        recent_messages = get_messages(st.session_state.chat_id, limit=40)
-        notes = search_knowledge(p_user_msg)
+    # Build generation context.
+    recent_messages = get_messages(st.session_state.chat_id, limit=40)
+    notes = search_knowledge(p_user_msg)
 
-        knowledge_block = ""
-        if notes:
-            knowledge_block = NL + "Shared privacy-safe knowledge learned from users:" + NL
-            for note in notes:
-                knowledge_block += "- " + note["topic"] + ": " + note["summary"] + NL
+    knowledge_block = ""
+    if notes:
+        knowledge_block = NL + "Shared privacy-safe knowledge learned from users:" + NL
+        for note in notes:
+            knowledge_block += "- " + note["topic"] + ": " + note["summary"] + NL
 
-        system_text = build_system_prompt("Medium") + knowledge_block
-        turns = [(m["role"], m["content"]) for m in recent_messages]
+    system_text = build_system_prompt("Medium") + knowledge_block
+    turns = [(m["role"], m["content"]) for m in recent_messages]
 
-        # Assume success; _stream_from_nonstream flips this to False on error.
-        st.session_state["_last_stream_ok"] = True
+    # _stream_from_nonstream flips this to False if a provider falls back on error.
+    # (We run on the main thread here, so session_state is reliable — no flags dict.)
+    st.session_state["_last_stream_ok"] = True
 
-        # Create thread-safe primitives.
-        chunk_queue = queue.Queue()
-        cancel_event = threading.Event()
-        # Per-session flags dict, shared BY REFERENCE with the worker thread.
-        # The worker (no ScriptRunContext) can't reliably write session_state,
-        # so provider success/failure is recorded here instead.
-        stream_flags = {"ok": True}
-
-        # Build the generator on the main thread (sets up provider state),
-        # then hand it to the worker which iterates it off-thread.
-        gen = generate_reply_stream(system_text, turns, model_id, flags=stream_flags)
-
-        t = threading.Thread(
-            target=_stream_worker,
-            args=(gen, chunk_queue, cancel_event),
-            daemon=True,
-        )
-        t.start()
-
-        # Persist thread-safe state in session so the fragment can access it.
-        st.session_state["_stream_queue"] = chunk_queue
-        st.session_state["_stream_cancel_event"] = cancel_event
-        st.session_state["_stream_thread"] = t
-        st.session_state["_stream_acc"] = []
-        st.session_state["_stream_done"] = False
-        st.session_state["_stream_user_id"] = user["id"]
-        st.session_state["_stream_flags"] = stream_flags
-        st.session_state["_stream_finalised"] = False
-
-    # Render the thinking slot and launch the polling fragment.
     with thinking_slot:
         with st.chat_message("assistant"):
-            # Spinner placeholder — cleared on first token inside the fragment.
-            spinner_ph = st.empty()
-            if st.session_state.get("_stream_spinner_ph") is None:
-                # Only set on the first run; the fragment clears it on first token.
-                spinner_ph.markdown(
-                    f'<div class="zynx-thinking"><span class="zynx-ring"></span>'
-                    f'<span>{html.escape(ai_name)} is thinking…</span></div>',
-                    unsafe_allow_html=True,
-                )
-                st.session_state["_stream_spinner_ph"] = spinner_ph
-
-            # Body placeholder — the fragment writes streamed text here.
             body_ph = st.empty()
-            if st.session_state.get("_stream_body_ph") is None:
-                st.session_state["_stream_body_ph"] = body_ph
-
-            # Launch the polling fragment. It will auto-rerun every 250 ms,
-            # drain the queue, and finalise (add_message once) when done.
-            _stream_fragment(
-                p_user_msg=p_user_msg,
-                p_model_key=p_model_key,
-                no_charge=no_charge,
-                chat_id=st.session_state.chat_id,
-                ai_name_frag=ai_name,
+            body_ph.markdown(
+                f'<div class="zynx-thinking"><span class="zynx-ring"></span>'
+                f'<span>{html.escape(ai_name)} is thinking…</span></div>',
+                unsafe_allow_html=True,
             )
 
+            acc = []
+            for chunk in generate_reply_stream(system_text, turns, model_id):
+                if chunk:
+                    acc.append(chunk)
+                    body_ph.markdown("".join(acc))
+
+            reply = "".join(acc).strip() or "I could not generate a response."
+            body_ph.markdown(reply)
+
+    # Persist once, then run side-effects.
+    add_message(st.session_state.chat_id, "assistant", reply)
+    if st.session_state.get("_last_stream_ok", True):
+        learn_from_exchange(p_user_msg)
+    elif not no_charge:
+        # Provider returned an error via the fallback path — refund the use.
+        refund_model_use(user["id"], p_model_key)
+
+    st.session_state.pending = None
+    st.rerun()
+
 elif pending:
-    # pending belongs to a chat the user navigated away from — drop it AND
-    # tear down any in-flight worker. Without this, the stale _stream_* state
-    # would make the worker-start guard skip a new worker and the fragment
-    # could persist the old chat's text into the newly-opened chat.
-    ev = st.session_state.get("_stream_cancel_event")
-    if ev is not None:
-        ev.set()  # tell the orphaned worker to stop pulling chunks
-    for key in ("_stream_queue", "_stream_cancel_event", "_stream_acc",
-                "_stream_done", "_stream_spinner_ph", "_stream_body_ph",
-                "_stream_user_id", "_stream_thread", "_stream_flags",
-                "_stream_finalised"):
-        st.session_state.pop(key, None)
+    # pending belongs to a chat the user navigated away from — drop it.
     st.session_state.pending = None
