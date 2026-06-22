@@ -307,19 +307,23 @@ def ui():
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"] { display: none !important; }
 
-    /* header must stay so the collapsed-sidebar expand arrow exists; blend it */
+    /* header must stay so the collapsed-sidebar expand button exists; blend it.
+       stHeader is position:fixed + transparent, so it adds no visible gap. */
     header[data-testid="stHeader"] {
         background: transparent !important;
         box-shadow: none !important;
-        height: 0 !important;
     }
-    /* the ">" button shown when the sidebar is collapsed — force it visible */
-    [data-testid="stSidebarCollapsedControl"] {
+    /* the ">" button shown when the sidebar is collapsed — force it visible
+       (testid is stExpandSidebarButton in Streamlit 1.58) */
+    [data-testid="stExpandSidebarButton"] {
         display: flex !important;
-        top: 0.6rem !important; left: 0.6rem !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
-    [data-testid="stSidebarCollapsedControl"] button {
+    [data-testid="stExpandSidebarButton"] button,
+    [data-testid="stExpandSidebarButton"] svg {
         color: var(--white) !important;
+        fill: var(--white) !important;
     }
 
     /* ---- base ---- */
