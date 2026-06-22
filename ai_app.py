@@ -127,6 +127,15 @@ def today():
     return datetime.date.today().isoformat()
 
 
+def wordmark_html(name):
+    """Split a wordmark into per-letter spans for the staggered reveal +
+    sheen animation. Each span carries its index in --i for the CSS delay."""
+    out = []
+    for i, ch in enumerate(name):
+        out.append(f'<span class="z-ltr" style="--i:{i}">{html.escape(ch)}</span>')
+    return "".join(out)
+
+
 def add_column_if_missing(table, column, definition):
     conn = connect()
     cur = conn.cursor()
@@ -365,6 +374,51 @@ def ui():
     }
 
     @keyframes zynxUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* ---- animated wordmark: per-letter ink reveal + light sheen sweep ---- */
+    .zynx-wordmark .z-ltr { display: inline-block; white-space: pre; color: var(--white); }
+
+    @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+        .zynx-wordmark .z-ltr {
+            background: linear-gradient(100deg, #ffffff 38%, #8f8f8f 50%, #ffffff 62%);
+            background-size: 220% 100%;
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: zynxSheen 3.6s ease-in-out 1.2s infinite;
+        }
+    }
+
+    /* reveal only on the .intro wordmarks (login + empty-chat hero), so the
+       persistent sidebar wordmark doesn't re-slide on every rerun */
+    .zynx-wordmark.intro .z-ltr {
+        opacity: 0;
+        animation: zynxLetter .55s cubic-bezier(.2,.7,.2,1) both;
+        animation-delay: calc(var(--i) * 70ms);
+    }
+    @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+        .zynx-wordmark.intro .z-ltr {
+            animation-name: zynxLetter, zynxSheen;
+            animation-duration: .55s, 3.6s;
+            animation-timing-function: cubic-bezier(.2,.7,.2,1), ease-in-out;
+            animation-iteration-count: 1, infinite;
+            animation-fill-mode: both, none;
+            animation-delay: calc(var(--i) * 70ms), calc(1400ms + var(--i) * 45ms);
+        }
+    }
+
+    @keyframes zynxLetter {
+        from { opacity: 0; transform: translateY(0.5em); filter: blur(5px); }
+        to   { opacity: 1; transform: none;             filter: blur(0); }
+    }
+    @keyframes zynxSheen {
+        0%        { background-position: 120% 0; }
+        55%, 100% { background-position: -20% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .zynx-wordmark .z-ltr, .zynx-wordmark.intro .z-ltr {
+            animation: none; opacity: 1; transform: none; filter: none;
+        }
+    }
 
     /* ======================================================
        SIDEBAR
@@ -1773,7 +1827,7 @@ if st.session_state.user_id is None:
         f"""
         <div style="text-align:center; margin: 2.6rem 0 1.6rem;">
             <div class="zynx-tag" style="margin-bottom:1.1rem;">Private AI · Monochrome Console</div>
-            <div class="zynx-wordmark" style="font-size:3.4rem; letter-spacing:-0.01em;">{DEFAULT_SETTINGS['ai_name']}</div>
+            <div class="zynx-wordmark intro" style="font-size:3.4rem; letter-spacing:-0.01em;">{wordmark_html(DEFAULT_SETTINGS['ai_name'])}</div>
             <div style="width:34px; height:1px; background:rgba(255,255,255,0.4); margin:1.1rem auto 0;"></div>
         </div>
         """,
@@ -1852,7 +1906,7 @@ if st.session_state.page not in nav_options:
 with st.sidebar:
     st.markdown(
         f'<div style="padding:0.25rem 0.25rem 0.75rem;">'
-        f'<div class="zynx-wordmark">{html.escape(ai_name)}</div>'
+        f'<div class="zynx-wordmark">{wordmark_html(ai_name)}</div>'
         f'<div class="zynx-tag" style="margin-top:0.4rem;">AI Console</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -2164,8 +2218,8 @@ messages = get_messages(st.session_state.chat_id)
 if not messages:
     st.markdown(
         '<div style="text-align:center;padding:3rem 0 1rem;">'
-        '<div class="zynx-wordmark" style="font-size:2.2rem;opacity:0.85;">'
-        f'{html.escape(ai_name)}</div>'
+        '<div class="zynx-wordmark intro" style="font-size:2.2rem;opacity:0.85;">'
+        f'{wordmark_html(ai_name)}</div>'
         '<div class="zynx-tag" style="margin-top:0.8rem;">Ask anything · Monochrome AI</div>'
         '</div>',
         unsafe_allow_html=True
