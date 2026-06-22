@@ -13,10 +13,12 @@ import os
 import re
 import html
 import time
+import queue
 import sqlite3
 import hashlib
 import secrets
 import datetime
+import threading
 import streamlit as st
 from google import genai
 
@@ -73,21 +75,21 @@ MODELS = {
         "short": "⚡ Supreme",
         "desc": "Our smartest model.",
         "model_id": "gemini-2.5-flash",
-        "limits": {"Free": 3, "Plus": 5, "Ultra": 8},
+        "limits": {"Guest": 1, "Free": 3, "Plus": 5, "Ultra": 8},
     },
     "everyday": {
         "label": "☀️ Zynx Everyday ☀️",
         "short": "☀️ Everyday",
         "desc": "Reliable all-rounder for daily use.",
         "model_id": "openrouter/free",
-        "limits": {"Free": 20, "Plus": 30, "Ultra": 50},
+        "limits": {"Guest": 2, "Free": 20, "Plus": 30, "Ultra": 50},
     },
     "lite": {
         "label": "💡 Zynx Lite 💡",
         "short": "💡 Lite",
         "desc": "Fast, runs on our own machine.",
         "model_id": "ollama/llama3.2",
-        "limits": {"Free": 35, "Plus": 50, "Ultra": 75},
+        "limits": {"Guest": 3, "Free": 35, "Plus": 50, "Ultra": 75},
     },
 }
 
@@ -120,7 +122,7 @@ def visible_models():
 # =========================================================
 
 def now():
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def today():
@@ -298,11 +300,17 @@ def ui():
         --serif: "Fraunces", Georgia, "Times New Roman", serif;
         --sans:  "IBM Plex Sans", system-ui, -apple-system, sans-serif;
         --mono:  "IBM Plex Mono", ui-monospace, monospace;
+        /* strong custom curves — the built-in CSS easings lack punch */
+        --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+        --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
     }
 
     /* ---- hide Streamlit chrome (but KEEP the sidebar expand control) ---- */
+    /* NOTE: do NOT display:none the whole stToolbar — the collapsed-sidebar
+       expand button (stExpandSidebarButton) is rendered inside it. Hide the
+       toolbar's action items individually so the expand button survives. */
     #MainMenu, footer,
-    [data-testid="stToolbar"],
+    [data-testid="stToolbarActions"],
     [data-testid="stDeployButton"],
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"] { display: none !important; }
@@ -381,7 +389,7 @@ def ui():
     .zynx-h {
         font-family: var(--serif); font-weight: 600; color: var(--white);
         font-size: 2.1rem; letter-spacing: -0.025em; line-height: 1.04; margin: 0 0 4px;
-        animation: zynxUp .45s ease both;
+        animation: zynxUp .42s var(--ease-out) both;
     }
     .zynx-sub {
         font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.16em;
@@ -394,34 +402,40 @@ def ui():
 
     @keyframes zynxUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-    /* ---- animated wordmark: per-letter ink reveal + light sheen sweep ---- */
+    /* ---- wordmark: metallic ink, per-letter reveal on intro only ----
+       Emil: motion is reserved for rare first-views. The persistent sidebar
+       wordmark renders on every rerun, so it stays STATIC (no perpetual
+       sheen loop). The metallic gradient is parked white-centred. Only the
+       .intro wordmarks (login + empty-chat hero) get the one-shot reveal and
+       a single sheen pass that then comes to rest. */
     .zynx-wordmark .z-ltr { display: inline-block; white-space: pre; color: var(--white); }
 
     @supports ((-webkit-background-clip: text) or (background-clip: text)) {
         .zynx-wordmark .z-ltr {
             background: linear-gradient(100deg, #ffffff 38%, #8f8f8f 50%, #ffffff 62%);
             background-size: 220% 100%;
+            background-position: 50% 0;              /* static, white-centred rest */
             -webkit-background-clip: text; background-clip: text;
             -webkit-text-fill-color: transparent;
-            animation: zynxSheen 3.6s ease-in-out 1.2s infinite;
         }
     }
 
-    /* reveal only on the .intro wordmarks (login + empty-chat hero), so the
-       persistent sidebar wordmark doesn't re-slide on every rerun */
+    /* intro reveal: per-letter ink rise with blur, staggered (Emil: blur masks
+       the transition; stagger 60ms; strong custom ease-out) */
     .zynx-wordmark.intro .z-ltr {
         opacity: 0;
-        animation: zynxLetter .55s cubic-bezier(.2,.7,.2,1) both;
-        animation-delay: calc(var(--i) * 70ms);
+        animation: zynxLetter .5s var(--ease-out) both;
+        animation-delay: calc(var(--i) * 60ms);
     }
     @supports ((-webkit-background-clip: text) or (background-clip: text)) {
         .zynx-wordmark.intro .z-ltr {
+            /* one reveal + ONE sheen pass that settles white-centred, then stops */
             animation-name: zynxLetter, zynxSheen;
-            animation-duration: .55s, 3.6s;
-            animation-timing-function: cubic-bezier(.2,.7,.2,1), ease-in-out;
-            animation-iteration-count: 1, infinite;
-            animation-fill-mode: both, none;
-            animation-delay: calc(var(--i) * 70ms), calc(1400ms + var(--i) * 45ms);
+            animation-duration: .5s, 1.5s;
+            animation-timing-function: var(--ease-out), var(--ease-in-out);
+            animation-iteration-count: 1, 1;
+            animation-fill-mode: both, forwards;
+            animation-delay: calc(var(--i) * 60ms), calc(900ms + var(--i) * 40ms);
         }
     }
 
@@ -429,14 +443,34 @@ def ui():
         from { opacity: 0; transform: translateY(0.5em); filter: blur(5px); }
         to   { opacity: 1; transform: none;             filter: blur(0); }
     }
+    /* single sweep: starts off-right, sweeps across, settles white-centred */
     @keyframes zynxSheen {
-        0%        { background-position: 120% 0; }
-        55%, 100% { background-position: -20% 0; }
+        from { background-position: 120% 0; }
+        to   { background-position: 50% 0; }
     }
     @media (prefers-reduced-motion: reduce) {
+        /* drop movement; keep elements visible. The thinking spinner stays —
+           it is functional state feedback, not decoration. */
         .zynx-wordmark .z-ltr, .zynx-wordmark.intro .z-ltr {
             animation: none; opacity: 1; transform: none; filter: none;
         }
+        .zynx-h, .zynx-card { animation: none !important; }
+        .zynx-card:hover { transform: none; }
+        [data-testid="stMain"] .stButton > button:active,
+        [data-testid="stMain"] .stFormSubmitButton > button:active,
+        [data-testid="stSidebar"] .stButton > button:active { transform: none; }
+    }
+
+    /* ======================================================
+       EXPORT BUTTONS  —  already mono via main-button CSS.
+       Compact sizing so they sit quietly in the header row.
+       ====================================================== */
+    .st-key-exp_md button, .st-key-exp_json button {
+        font-size: 0.6rem !important; padding: 0.3rem 0.75rem !important;
+        border-color: var(--line) !important; color: var(--muted) !important;
+    }
+    .st-key-exp_md button:hover, .st-key-exp_json button:hover {
+        border-color: var(--line-2) !important; color: var(--white) !important;
     }
 
     /* ======================================================
@@ -459,9 +493,11 @@ def ui():
         border: 1px solid transparent; background: transparent !important; color: var(--text) !important;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         box-shadow: none !important;
-        transition: background .14s ease, border-color .14s ease, color .14s ease;
+        transition: background .14s ease, border-color .14s ease, color .14s ease, transform .12s var(--ease-out);
     }
     [data-testid="stSidebar"] .stButton > button:hover { background: rgba(255,255,255,0.045) !important; color: var(--white) !important; }
+    /* press feedback — subtle, rows are wide */
+    [data-testid="stSidebar"] .stButton > button:active { transform: scale(0.985); }
 
     /* quiet (tertiary) */
     [data-testid="stSidebar"] .stButton > button[kind="tertiary"] { background: transparent !important; color: var(--text) !important; border: 1px solid transparent; }
@@ -532,12 +568,17 @@ def ui():
         border: 1px solid var(--line-2); border-radius: 11px;
         font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.16em;
         text-transform: uppercase; font-weight: 500; padding: 0.6rem 1.1rem;
-        box-shadow: none !important; transition: all .15s ease;
+        box-shadow: none !important;
+        /* explicit props only — never `all` (would also animate layout) */
+        transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s var(--ease-out);
     }
     [data-testid="stMain"] .stButton > button:hover,
     [data-testid="stMain"] .stFormSubmitButton > button:hover {
         background: rgba(255,255,255,0.05); border-color: var(--white); color: var(--white);
     }
+    /* press feedback — instant confirmation the UI heard the click */
+    [data-testid="stMain"] .stButton > button:active,
+    [data-testid="stMain"] .stFormSubmitButton > button:active { transform: scale(0.97); }
     [data-testid="stMain"] .stButton > button[kind="primary"],
     [data-testid="stMain"] .stFormSubmitButton > button[kind="primaryFormSubmit"] {
         background: var(--white); color: #000; border: none;
@@ -545,6 +586,27 @@ def ui():
     [data-testid="stMain"] .stButton > button[kind="primary"]:hover,
     [data-testid="stMain"] .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover { background: #e4e4e4; color: #000; }
     [data-testid="stMain"] .stButton > button:disabled { opacity: 0.5; }
+
+    /* ---- export buttons: tiny ghost chips ----
+       Override the chunky main-button padding so labels never wrap to one
+       letter per line. Keyed by Streamlit's st-key-<key> wrapper class. */
+    [class*="st-key-exp_"] button {
+        font-size: 0.52rem !important;
+        letter-spacing: 0.13em !important;
+        padding: 0.26rem 0.5rem !important;
+        border-radius: 7px !important;
+        white-space: nowrap !important;
+        min-width: 0 !important;
+        width: auto !important;
+        color: var(--faint) !important;
+        border: 1px solid var(--line) !important;
+        background: transparent !important;
+    }
+    [class*="st-key-exp_"] button:hover {
+        color: var(--white) !important;
+        border-color: var(--line-2) !important;
+        background: rgba(255,255,255,0.04) !important;
+    }
 
     /* ======================================================
        CHAT MESSAGES  —  avatar removed, mono role tag + hairline rail
@@ -608,6 +670,7 @@ def ui():
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 -6px 22px rgba(0,0,0,0.4);
         padding: 0.3rem 0.55rem 0.45rem;
         margin-top: 0.6rem;
+        transition: border-color .16s ease;
     }
     .st-key-zynx_composer:focus-within { border-color: var(--line-2); }
     .st-key-zynx_composer [data-testid="stVerticalBlock"] { gap: 0.1rem; }
@@ -640,6 +703,7 @@ def ui():
         color: var(--muted) !important; border-radius: 9px !important;
         font-family: var(--mono) !important; font-size: 0.66rem !important;
         letter-spacing: 0.14em; text-transform: uppercase;
+        transition: color .14s ease, border-color .14s ease, background .14s ease;
     }
     [data-testid="stSegmentedControl"] button:hover { color: var(--text) !important; border-color: var(--line-2) !important; }
     [data-testid="stSegmentedControl"] button[aria-checked="true"],
@@ -666,10 +730,13 @@ def ui():
         position: relative; border: 1px solid var(--line); border-radius: 18px;
         padding: 1.5rem 1.4rem 1.4rem; height: 100%;
         background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
-        overflow: hidden; transition: border-color .2s ease, transform .2s ease;
-        animation: zynxUp .5s ease both;
+        overflow: hidden; transition: border-color .2s ease, transform .2s var(--ease-out);
+        animation: zynxUp .45s var(--ease-out) both;
+        animation-delay: calc(var(--i, 0) * 70ms);   /* stagger across the 3 columns */
     }
-    .zynx-card:hover { border-color: var(--line-2); transform: translateY(-3px); }
+    @media (hover: hover) and (pointer: fine) {
+        .zynx-card:hover { border-color: var(--line-2); transform: translateY(-3px); }
+    }
     .zynx-card.current { border-color: rgba(255,255,255,0.4); }
     .zynx-card .badge {
         position: absolute; top: 1.05rem; right: 1.05rem;
@@ -834,6 +901,47 @@ def _gemini_generate(system_text, turns, model, retries_per_key=1):
     return False, "**The model could not respond.**\n\n```\n" + last_err[:600] + "\n```"
 
 
+def _gemini_generate_stream(system_text, turns, model, flags=None):
+    """Streaming variant of _gemini_generate.
+
+    Yields text chunks as they arrive from the Gemini streaming API.
+    On any exception before the first token, tries the next key in the
+    failover list. If all keys fail (or an error occurs mid-stream),
+    falls back to the non-streaming sibling via _stream_from_nonstream.
+    """
+    keys = get_gemini_keys()
+    if not keys:
+        yield from _stream_from_nonstream(_gemini_generate, system_text, turns, model, flags=flags)
+        return
+
+    conversation = system_text + "\nCurrent chat:\n"
+    for role, content in turns:
+        conversation += role + ": " + content + "\n"
+    conversation += "assistant:"
+
+    for api_key in keys:
+        client = get_client(api_key)
+        token_count = 0
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=model, contents=conversation
+            ):
+                text = chunk.text if chunk.text else ""
+                if text:
+                    token_count += 1
+                    yield text
+            return  # clean exit after all chunks
+        except Exception:
+            if token_count > 0:
+                # error mid-stream after partial output — fall back now
+                break
+            # no tokens yet — try the next key
+            continue
+
+    # all keys exhausted or mid-stream failure
+    yield from _stream_from_nonstream(_gemini_generate, system_text, turns, model, flags=flags)
+
+
 def _anthropic_generate(system_text, turns, model):
     """Claude path: proper system prompt + user/assistant message history."""
     key = get_anthropic_key()
@@ -884,6 +992,38 @@ def _anthropic_generate(system_text, turns, model):
         return False, "**The model could not respond.**\n\n```\n" + err[:600] + "\n```"
 
 
+def _anthropic_generate_stream(system_text, turns, model, flags=None):
+    """Streaming variant of _anthropic_generate.
+
+    Uses the Anthropic SDK's .messages.stream() context manager.
+    Falls back to _anthropic_generate if streaming raises any exception.
+    """
+    key = get_anthropic_key()
+    if not key:
+        yield from _stream_from_nonstream(_anthropic_generate, system_text, turns, model, flags=flags)
+        return
+
+    messages = [
+        {"role": "assistant" if role == "assistant" else "user", "content": content}
+        for role, content in turns
+        if content and content.strip()
+    ]
+    if not messages:
+        messages = [{"role": "user", "content": "Hello"}]
+    if messages[0]["role"] != "user":
+        messages.insert(0, {"role": "user", "content": "Hello"})
+
+    try:
+        client = get_anthropic_client(key)
+        with client.messages.stream(
+            model=model, max_tokens=4096, system=system_text, messages=messages
+        ) as s:
+            for token in s.text_stream:
+                yield token
+    except Exception:
+        yield from _stream_from_nonstream(_anthropic_generate, system_text, turns, model, flags=flags)
+
+
 def _groq_generate(system_text, turns, model):
     """Groq path (free, OpenAI-style chat): system message + user/assistant history."""
     key = get_groq_key()
@@ -920,6 +1060,34 @@ def _groq_generate(system_text, turns, model):
             return False, "**That Groq model is unavailable.** Pick a current one at console.groq.com/docs/models."
         return False, "**The model could not respond.**\n\n```\n" + err[:600] + "\n```"
 
+
+def _groq_generate_stream(system_text, turns, model, flags=None):
+    """Streaming variant of _groq_generate.
+
+    Uses Groq's stream=True parameter and iterates SSE chunks.
+    Falls back to _groq_generate on any exception.
+    """
+    key = get_groq_key()
+    if not key:
+        yield from _stream_from_nonstream(_groq_generate, system_text, turns, model, flags=flags)
+        return
+
+    messages = [{"role": "system", "content": system_text}]
+    for role, content in turns:
+        if content and content.strip():
+            messages.append({"role": "assistant" if role == "assistant" else "user", "content": content})
+
+    try:
+        client = get_groq_client(key)
+        resp = client.chat.completions.create(
+            model=model, max_tokens=4096, messages=messages, stream=True
+        )
+        for chunk in resp:
+            piece = chunk.choices[0].delta.content
+            if piece:
+                yield piece
+    except Exception:
+        yield from _stream_from_nonstream(_groq_generate, system_text, turns, model, flags=flags)
 
 
 def get_openrouter_key():
@@ -1026,6 +1194,17 @@ def _openrouter_generate(system_text, turns, model=None):
             return False, "**OpenRouter error.**\n\n```\n" + str(e)[:800] + "\n```"
 
 
+def _openrouter_generate_stream(system_text, turns, model=None, flags=None):
+    """OpenRouter streaming — intentionally falls back to the non-streaming sibling.
+
+    The existing _openrouter_generate has valuable 429 retry/backoff logic that
+    is difficult to replicate correctly over a streamed socket.  Treating
+    OpenRouter as a non-streaming provider (Everyday model) is the accepted,
+    documented trade-off for this bundle.
+    """
+    yield from _stream_from_nonstream(_openrouter_generate, system_text, turns, model, flags=flags)
+
+
 def _ollama_generate(system_text, turns, model):
     """Local path (Zynx Lite): talks to a local Ollama server. Free, unlimited,
     but only works when the host PC has Ollama running."""
@@ -1070,6 +1249,50 @@ def _ollama_generate(system_text, turns, model):
         )
 
 
+def _ollama_generate_stream(system_text, turns, model, flags=None):
+    """Streaming variant of _ollama_generate.
+
+    Sends stream=True to the Ollama /api/chat endpoint, then reads
+    newline-delimited JSON objects.  Falls back to _ollama_generate
+    on any exception.
+    """
+    import json
+    import urllib.request
+    import urllib.error
+
+    base = (os.getenv("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
+
+    messages = [{"role": "system", "content": system_text}]
+    for role, content in turns:
+        if content and content.strip():
+            messages.append({"role": "assistant" if role == "assistant" else "user", "content": content})
+
+    payload = {"model": model, "messages": messages, "stream": True}
+
+    try:
+        req = urllib.request.Request(
+            base + "/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line.decode("utf-8"))
+                except Exception:
+                    continue
+                piece = obj.get("message", {}).get("content", "")
+                if piece:
+                    yield piece
+                if obj.get("done"):
+                    break
+    except Exception:
+        yield from _stream_from_nonstream(_ollama_generate, system_text, turns, model, flags=flags)
+
+
 def generate_reply(system_text, turns, model):
     """Provider-routed generation by model id. Returns (ok, text).
 
@@ -1089,6 +1312,124 @@ def generate_reply(system_text, turns, model):
     if model.startswith("ollama/"):
         return _ollama_generate(system_text, turns, model[len("ollama/"):])
     return _gemini_generate(system_text, turns, model)
+
+
+# =========================================================
+# STREAMING HELPERS
+# =========================================================
+
+def _stream_from_nonstream(fn, *args, flags=None):
+    """Adapter: wraps a non-streaming (ok, text) provider fn as a generator.
+
+    Yields the full text as a single chunk so the streaming UI can treat
+    every provider uniformly.  On failure the 'ok' flag is recorded so
+    Phase B can refund matching pre-existing semantics.
+
+    Because the streaming generator is iterated inside a background worker
+    thread (which has no Streamlit ScriptRunContext, so its session_state
+    is a process-global mock — unsafe across concurrent sessions), the
+    authoritative failure signal goes into *flags*, a per-session dict
+    passed by reference from the main thread. The legacy session_state
+    write is kept only for direct (non-threaded) callers and the unit tests.
+    """
+    ok, text = fn(*args)
+    if not ok:
+        st.session_state["_last_stream_ok"] = False
+        if flags is not None:
+            flags["ok"] = False
+    yield text
+
+
+def accumulate_stream(gen, should_cancel=None):
+    """Pure-logic helper: drains a text-chunk generator into a single string.
+
+    Args:
+        gen:           iterable of str chunks.
+        should_cancel: zero-arg callable returning bool (default: never cancel).
+
+    Returns:
+        (text: str, cancelled: bool)
+
+    Extracted here so it can be unit-tested without Streamlit.
+    """
+    if should_cancel is None:
+        should_cancel = lambda: False  # noqa: E731
+
+    parts = []
+    for chunk in gen:
+        if should_cancel():
+            return "".join(parts), True
+        parts.append(chunk)
+    return "".join(parts), False
+
+
+def _worker_accumulate(gen, chunk_queue, cancel_event):
+    """Pure worker logic: drain *gen* into *chunk_queue*, honouring *cancel_event*.
+
+    Designed to run in a background thread so the Streamlit main thread
+    remains free to process widget interactions (including the STOP button).
+
+    Protocol:
+    - Pulls chunks from *gen* one at a time.
+    - Before pulling the next chunk, checks ``cancel_event.is_set()``.
+    - Each non-empty chunk is pushed onto *chunk_queue*.
+    - When done (natural end OR cancel), pushes ``None`` as a sentinel so
+      the consumer knows the stream has finished.
+    - Never touches ``st.session_state`` — only plain thread-safe primitives.
+
+    This function is pure enough to be unit-tested without Streamlit:
+    pass any iterator as *gen*, a ``queue.SimpleQueue`` as *chunk_queue*,
+    and a ``threading.Event`` as *cancel_event*.
+    """
+    try:
+        for chunk in gen:
+            if cancel_event.is_set():
+                break
+            if chunk:
+                chunk_queue.put(chunk)
+    except Exception:
+        # Swallow provider errors — the generator's own except clauses
+        # already handle fallback; any uncaught exception here just ends
+        # the stream (sentinel below still fires, so Phase B finalises).
+        pass
+    finally:
+        chunk_queue.put(None)  # sentinel: stream finished (or cancelled)
+
+
+def _stream_worker(gen, chunk_queue, cancel_event):
+    """Thread target: drain *gen* into *chunk_queue* with cancel support.
+
+    Calls _worker_accumulate which handles iteration, cancel-event checks,
+    and the None sentinel.  ``_stream_from_nonstream`` (called inside gen)
+    may write ``st.session_state["_last_stream_ok"] = False``; that write
+    completes before the sentinel is pushed, so the Phase-B fragment can
+    safely read the flag after it receives the sentinel.
+    """
+    _worker_accumulate(gen, chunk_queue, cancel_event)
+
+
+def generate_reply_stream(system_text, turns, model, flags=None):
+    """Provider-routed streaming generator.  Yields text chunks.
+
+    Routes identically to generate_reply but returns a generator of chunks
+    instead of (ok, text).  Each provider's streaming variant falls back
+    to its non-streaming sibling on failure via _stream_from_nonstream,
+    which records the failure into *flags* (a per-session dict shared by
+    reference with the main thread — see _stream_from_nonstream).
+
+    OpenRouter is intentionally non-streaming (preserves 429 retry/backoff).
+    """
+    st.session_state["_last_stream_ok"] = True  # legacy/no-thread path
+    if model.startswith("claude"):
+        yield from _anthropic_generate_stream(system_text, turns, model, flags=flags)
+    elif model.startswith("groq/"):
+        yield from _groq_generate_stream(system_text, turns, model[len("groq/"):], flags=flags)
+    elif model.startswith("openrouter/"):
+        yield from _openrouter_generate_stream(system_text, turns, model, flags=flags)
+    elif model.startswith("ollama/"):
+        yield from _ollama_generate_stream(system_text, turns, model[len("ollama/"):], flags=flags)
+    else:
+        yield from _gemini_generate_stream(system_text, turns, model, flags=flags)
 
 
 def get_owner_code():
@@ -1202,6 +1543,30 @@ def create_user(email, password, owner_code_input=""):
     conn.close()
 
     return True, "Account created.", user_id
+
+
+def create_guest_user():
+    """Create an ephemeral Guest account so the app's chat/usage machinery
+    works without sign-up. Free uses per model come from the 'Guest' plan
+    limits (Supreme 1 / Everyday 2 / Lite 3). No real credentials are set."""
+    token = secrets.token_hex(8)
+    email = f"guest_{token}@guest.zynx"
+    username = generate_username(email)
+    salt, password_hash = make_password_hash(secrets.token_hex(16))
+
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO users (email, username, salt, password_hash, plan, credits_used, credits_date, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (email, username, salt, password_hash, "Guest", 0, today(), now())
+    )
+    user_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return user_id
 
 
 def verify_login(email, password):
@@ -1446,6 +1811,142 @@ def get_messages(chat_id, limit=None):
         return rows[-limit:]
 
     return rows
+
+
+# =========================================================
+# MESSAGE OPS  —  edit / delete / regenerate helpers
+# Each uses connect() / cursor / commit / close, matching the
+# surrounding helpers, and works on both SQLite and libSQL.
+# =========================================================
+
+def get_message(message_id):
+    """Fetch a single message row by PK.  Returns None if not found."""
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM messages WHERE id=?", (message_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def update_message(message_id, content, chat_id=None):
+    """Overwrite the content of an existing message (Edit action).
+
+    Defense-in-depth: when chat_id is supplied the WHERE clause also
+    constrains the owning chat, so a stale/wrong message_id can never
+    touch a message that belongs to a different chat.  Callers that have
+    the session chat_id should always supply it; the kwarg is optional
+    only to keep existing callers without a chat_id working.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    if chat_id is not None:
+        cur.execute(
+            "UPDATE messages SET content=? WHERE id=? AND chat_id=?",
+            (content, message_id, chat_id),
+        )
+    else:
+        cur.execute("UPDATE messages SET content=? WHERE id=?", (content, message_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_message(message_id, chat_id=None):
+    """Remove a single message row (Delete action).
+
+    Deletes only the one row the user clicked; its paired turn is left
+    as-is for predictability (documented decision in plan §10).
+
+    Defense-in-depth: when chat_id is supplied the WHERE clause also
+    constrains the owning chat.  Callers should supply it where available.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    if chat_id is not None:
+        cur.execute(
+            "DELETE FROM messages WHERE id=? AND chat_id=?",
+            (message_id, chat_id),
+        )
+    else:
+        cur.execute("DELETE FROM messages WHERE id=?", (message_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_messages_from(chat_id, from_id):
+    """Remove a message and all subsequent messages in the same chat.
+
+    Used by Regenerate (drop the assistant turn and everything after it)
+    and by Edit-resubmit (drop the stale assistant reply and everything
+    after the edited user turn).  Rows are ordered by ascending id so
+    `id >= from_id` captures the target and all following turns.
+    """
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM messages WHERE chat_id=? AND id>=?",
+        (chat_id, from_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+# =========================================================
+# EXPORT FORMATTERS  (pure; no DB calls; testable in isolation)
+# =========================================================
+
+def chat_to_markdown(chat_title, messages):
+    """Format a chat as a Markdown document.
+
+    Args:
+        chat_title: str — the chat's title line.
+        messages:   list of dict-like rows supporting m["role"] / m["content"].
+
+    Returns a single str ready to download as a .md file.
+    """
+    ts = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z"
+    lines = [
+        f"# {chat_title}\n",
+        f"> Exported from Zynx · {ts}\n",
+        "---\n",
+    ]
+    for m in messages:
+        label = "**Zynx:**" if m["role"] == "assistant" else "**You:**"
+        lines.append(f"{label}\n\n{m['content']}\n\n---\n")
+    return "\n".join(lines)
+
+
+def chat_to_json(chat_title, messages):
+    """Format a chat as a JSON document.
+
+    Shape: {"app":"Zynx","exported_at":<UTC ISO>,"title":<title>,
+            "messages":[{"role":…,"content":…,"created_at":…},…]}
+
+    created_at is included only when present on the row.
+
+    Returns a JSON str (ensure_ascii=False so Unicode / emoji round-trips).
+    """
+    import json as _json
+
+    ts = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z"
+    msg_list = []
+    for m in messages:
+        entry = {"role": m["role"], "content": m["content"]}
+        try:
+            ca = m["created_at"]
+            if ca is not None:
+                entry["created_at"] = ca
+        except (KeyError, TypeError):
+            pass
+        msg_list.append(entry)
+
+    doc = {
+        "app": "Zynx",
+        "exported_at": ts,
+        "title": chat_title,
+        "messages": msg_list,
+    }
+    return _json.dumps(doc, indent=2, ensure_ascii=False)
 
 
 # =========================================================
@@ -1886,6 +2387,21 @@ if st.session_state.user_id is None:
                 else:
                     st.error(msg)
 
+    st.markdown(
+        '<div class="zynx-tag" style="text-align:center;margin:1.4rem 0 0.6rem;color:var(--faint);">'
+        'or try it first</div>',
+        unsafe_allow_html=True
+    )
+    if st.button("Continue as guest", key="guest_enter", use_container_width=True):
+        st.session_state.user_id = create_guest_user()
+        st.session_state.chat_id = None
+        st.session_state.page = "Chat"
+        st.rerun()
+    st.caption(
+        "Guest: 1 free ⚡ Supreme · 2 free ☀️ Everyday · 3 free 💡 Lite message per day. "
+        "Sign up free for more."
+    )
+
     st.stop()
 
 
@@ -2017,7 +2533,15 @@ with st.sidebar:
             st.session_state.page = "Settings"
             st.rerun()
 
-    if st.button("Log out", key="nav_logout", type="tertiary", use_container_width=True):
+    _is_guest = safe_get(user, "plan") == "Guest"
+    if _is_guest:
+        if st.button("Sign up free  →", key="guest_signup", type="primary", use_container_width=True):
+            st.session_state.user_id = None
+            st.session_state.chat_id = None
+            st.session_state.page = "Chat"
+            st.rerun()
+
+    if st.button("Sign in / Log in" if _is_guest else "Log out", key="nav_logout", type="tertiary", use_container_width=True):
         st.session_state.user_id = None
         st.session_state.chat_id = None
         st.session_state.page = "Chat"
@@ -2046,7 +2570,7 @@ if st.session_state.page == "Plans":
 
     cols = st.columns(3)
 
-    for col, (name, price, per, blurb) in zip(cols, plan_cards):
+    for idx, (col, (name, price, per, blurb)) in enumerate(zip(cols, plan_cards)):
         with col:
             is_current = current_plan == name
             badge = '<span class="badge">Current</span>' if is_current else ''
@@ -2060,7 +2584,7 @@ if st.session_state.page == "Plans":
 
             st.markdown(
                 f"""
-                <div class="zynx-card{' current' if is_current else ''}">
+                <div class="zynx-card{' current' if is_current else ''}" style="--i:{idx}">
                     {badge}
                     <div class="name">{name}</div>
                     <div class="price">{price}</div>
@@ -2071,7 +2595,20 @@ if st.session_state.page == "Plans":
                 unsafe_allow_html=True
             )
 
-            if is_current:
+            if current_plan == "Guest":
+                # Guests must sign up before choosing a plan (otherwise they'd
+                # bypass the guest free-use limits by switching to Free).
+                if st.button(
+                    "Sign up to unlock",
+                    key=f"plan_{name}",
+                    type="primary" if name != "Free" else "secondary",
+                    use_container_width=True
+                ):
+                    st.session_state.user_id = None
+                    st.session_state.chat_id = None
+                    st.session_state.page = "Chat"
+                    st.rerun()
+            elif is_current:
                 st.button("Current plan", key=f"plan_{name}", disabled=True, use_container_width=True)
             elif st.button(
                 f"Switch to {name}",
@@ -2225,14 +2762,40 @@ if not current_chat:
     st.session_state.chat_id = create_chat(user["id"])
     current_chat = get_chat(st.session_state.chat_id, user["id"])
 
+# Fetch messages once — used by both the export buttons and the render loop below.
+messages = get_messages(st.session_state.chat_id)
+
 st.markdown(
     f'<div class="zynx-sub" style="margin-bottom:0.2rem;">Conversation</div>'
     f'<div class="zynx-h">{html.escape(current_chat["title"])}</div>',
     unsafe_allow_html=True
 )
-st.markdown('<hr style="margin:1rem 0 1.4rem;">', unsafe_allow_html=True)
 
-messages = get_messages(st.session_state.chat_id)
+# Export controls — shown only when there are messages to export.
+if messages:
+    _title_slug = re.sub(r"[^\w\-]", "_", current_chat["title"])[:40] or "chat"
+    _md_content = chat_to_markdown(current_chat["title"], messages)
+    _json_content = chat_to_json(current_chat["title"], messages)
+
+    _exp_spacer, _exp_md_col, _exp_json_col = st.columns([5, 1.4, 1])
+    with _exp_md_col:
+        st.download_button(
+            label="⬇ MARKDOWN",
+            data=_md_content,
+            file_name=f"{_title_slug}.md",
+            mime="text/markdown",
+            key="exp_md",
+        )
+    with _exp_json_col:
+        st.download_button(
+            label="⬇ JSON",
+            data=_json_content,
+            file_name=f"{_title_slug}.json",
+            mime="application/json",
+            key="exp_json",
+        )
+
+st.markdown('<hr style="margin:1rem 0 1.4rem;">', unsafe_allow_html=True)
 
 if not messages:
     st.markdown(
@@ -2244,6 +2807,7 @@ if not messages:
         unsafe_allow_html=True
     )
 
+# Render chat history — plain messages, no per-message controls.
 for msg in messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -2310,10 +2874,17 @@ if user_msg:
     # per-model daily limit
     remaining, limit = model_uses_remaining(user, model_key)
     if limit is not None and remaining <= 0:
-        st.error(
-            f"You've used all your {MODELS[model_key]['label']} messages for today "
-            f"({limit}/day on the {user['plan']} plan). Try another model, or upgrade in Plans."
-        )
+        if user["plan"] == "Guest":
+            st.error(
+                f"You've used your {limit} free {MODELS[model_key]['label']} "
+                f"guest message{'s' if limit != 1 else ''} for today. "
+                "Sign up free for more, or try another model."
+            )
+        else:
+            st.error(
+                f"You've used all your {MODELS[model_key]['label']} messages for today "
+                f"({limit}/day on the {user['plan']} plan). Try another model, or upgrade in Plans."
+            )
         st.stop()
 
     # save the user's turn, count the use, then rerun so it appears immediately
@@ -2326,49 +2897,220 @@ if user_msg:
     }
     st.rerun()
 
-# -------- Phase B: a reply is pending — show the thinking indicator, then generate --------
+# -------- Phase B: a reply is pending — stream it via a worker thread --------
+#
+# Architecture:
+#   1. The provider generator is iterated in a BACKGROUND worker thread
+#      (_stream_worker / _worker_accumulate). The worker pushes chunks onto a
+#      queue.Queue and pushes a None sentinel when the stream ends.
+#   2. A @st.fragment(run_every=0.25) micro-reruns every 250 ms while the
+#      worker is running: each tick drains available chunks into a placeholder
+#      so the spinner clears on the first token and text grows smoothly.
+#   3. On the tick that receives the sentinel, the fragment finalises and reruns.
+#
+#   (The worker also carries a threading.Event used only to tear down an
+#    orphaned worker when the user navigates to another chat mid-stream.)
+#
+#   Invariants:
+#   - add_message called EXACTLY ONCE (idempotency-guarded on finalise).
+#   - refund_model_use ONLY on provider error; no_charge suppresses it for regen.
+#   - learn_from_exchange only on clean completion.
+#   - provider success/failure flows through the per-session _stream_flags dict.
+
 pending = st.session_state.get("pending")
 
+
+@st.fragment(run_every=0.25)
+def _stream_fragment(p_user_msg, p_model_key, no_charge, chat_id, ai_name_frag):
+    """Fragment that polls the worker-thread queue and renders streamed tokens.
+
+    Runs every 250 ms while a reply is streaming; each run is short so the
+    spinner clears on the first token and the text grows smoothly. Calls
+    st.stop() / st.rerun() once the worker pushes its sentinel.
+    """
+    model_id = MODELS[p_model_key]["model_id"]
+    chunk_queue = st.session_state.get("_stream_queue")
+    cancel_event = st.session_state.get("_stream_cancel_event")
+
+    if chunk_queue is None or cancel_event is None:
+        # Worker state missing (e.g. fragment fired after cleanup) — bail out.
+        st.stop()
+        return
+
+    # ----- Drain available chunks (non-blocking) -----
+    acc = st.session_state.get("_stream_acc", [])
+    sentinel_received = st.session_state.get("_stream_done", False)
+
+    while not sentinel_received:
+        try:
+            chunk = chunk_queue.get_nowait()
+        except queue.Empty:
+            break
+        if chunk is None:
+            sentinel_received = True
+        else:
+            acc.append(chunk)
+
+    st.session_state["_stream_acc"] = acc
+    st.session_state["_stream_done"] = sentinel_received
+
+    # ----- Render current state -----
+    spinner_ph = st.session_state.get("_stream_spinner_ph")
+    body_ph = st.session_state.get("_stream_body_ph")
+
+    if acc and spinner_ph is not None:
+        # First token arrived — clear the thinking spinner.
+        spinner_ph.empty()
+        st.session_state["_stream_spinner_ph"] = None  # only clear once
+
+    current_text = "".join(acc)
+    if body_ph is not None and current_text:
+        body_ph.markdown(current_text)
+
+    # ----- Finalise when the worker has pushed its sentinel -----
+    if sentinel_received:
+        # Idempotency guard: if a previous tick already persisted the message
+        # (e.g. a side-effect below raised before st.rerun() could fire), do
+        # NOT write it again. Just stop this fragment tick.
+        if st.session_state.get("_stream_finalised"):
+            st.stop()
+            return
+
+        reply = current_text.strip() or "I could not generate a response."
+        # Authoritative success flag comes from the per-session flags dict the
+        # worker thread mutates by reference (session_state is unreliable
+        # across the worker's context — see _stream_from_nonstream).
+        flags = st.session_state.get("_stream_flags") or {}
+        stream_ok = flags.get("ok", True)
+
+        # Persist exactly once, then immediately mark finalised so a re-entrant
+        # tick (if a side-effect below raises) cannot double-write.
+        add_message(chat_id, "assistant", reply)
+        st.session_state["_stream_finalised"] = True
+
+        # Side-effects are best-effort: never let them block finalisation/rerun.
+        try:
+            if stream_ok:
+                learn_from_exchange(p_user_msg)
+            elif not no_charge:
+                # Provider returned an error via the fallback path — refund the use.
+                refund_model_use(
+                    st.session_state.get("_stream_user_id"), p_model_key
+                )
+        except Exception:
+            pass
+
+        # Clean up all worker state from session.
+        for key in ("_stream_queue", "_stream_cancel_event", "_stream_acc",
+                    "_stream_done", "_stream_spinner_ph", "_stream_body_ph",
+                    "_stream_user_id", "_stream_thread", "_stream_flags",
+                    "_stream_finalised"):
+            st.session_state.pop(key, None)
+
+        # Clear pending and trigger a full app rerun to render the finalised message
+        # through the normal history loop (with action buttons).
+        st.session_state.pending = None
+        st.session_state["_last_stream_ok"] = True
+        st.rerun()
+        # st.stop() is not needed here because st.rerun() will replace the fragment.
+        return
+
+    # Not yet done — fragment auto-reruns in 250 ms (run_every=0.25).
+
+
 if pending and pending["chat_id"] == st.session_state.chat_id:
+    p_user_msg = pending["user_msg"]
+    p_model_key = pending.get("model_key", DEFAULT_MODEL_KEY)
+    model_id = MODELS[p_model_key]["model_id"]
+    no_charge = pending.get("no_charge", False)  # True for regenerate (reuses prior use)
+
+    # Start the worker thread on the FIRST run for this pending (no thread yet in state).
+    if st.session_state.get("_stream_thread") is None:
+        # Build generation context.
+        recent_messages = get_messages(st.session_state.chat_id, limit=40)
+        notes = search_knowledge(p_user_msg)
+
+        knowledge_block = ""
+        if notes:
+            knowledge_block = NL + "Shared privacy-safe knowledge learned from users:" + NL
+            for note in notes:
+                knowledge_block += "- " + note["topic"] + ": " + note["summary"] + NL
+
+        system_text = build_system_prompt("Medium") + knowledge_block
+        turns = [(m["role"], m["content"]) for m in recent_messages]
+
+        # Assume success; _stream_from_nonstream flips this to False on error.
+        st.session_state["_last_stream_ok"] = True
+
+        # Create thread-safe primitives.
+        chunk_queue = queue.Queue()
+        cancel_event = threading.Event()
+        # Per-session flags dict, shared BY REFERENCE with the worker thread.
+        # The worker (no ScriptRunContext) can't reliably write session_state,
+        # so provider success/failure is recorded here instead.
+        stream_flags = {"ok": True}
+
+        # Build the generator on the main thread (sets up provider state),
+        # then hand it to the worker which iterates it off-thread.
+        gen = generate_reply_stream(system_text, turns, model_id, flags=stream_flags)
+
+        t = threading.Thread(
+            target=_stream_worker,
+            args=(gen, chunk_queue, cancel_event),
+            daemon=True,
+        )
+        t.start()
+
+        # Persist thread-safe state in session so the fragment can access it.
+        st.session_state["_stream_queue"] = chunk_queue
+        st.session_state["_stream_cancel_event"] = cancel_event
+        st.session_state["_stream_thread"] = t
+        st.session_state["_stream_acc"] = []
+        st.session_state["_stream_done"] = False
+        st.session_state["_stream_user_id"] = user["id"]
+        st.session_state["_stream_flags"] = stream_flags
+        st.session_state["_stream_finalised"] = False
+
+    # Render the thinking slot and launch the polling fragment.
     with thinking_slot:
         with st.chat_message("assistant"):
-            # custom spinner — animates client-side even with "reduce motion" on
-            st.markdown(
-                f'<div class="zynx-thinking"><span class="zynx-ring"></span>'
-                f'<span>{html.escape(ai_name)} is thinking…</span></div>',
-                unsafe_allow_html=True
+            # Spinner placeholder — cleared on first token inside the fragment.
+            spinner_ph = st.empty()
+            if st.session_state.get("_stream_spinner_ph") is None:
+                # Only set on the first run; the fragment clears it on first token.
+                spinner_ph.markdown(
+                    f'<div class="zynx-thinking"><span class="zynx-ring"></span>'
+                    f'<span>{html.escape(ai_name)} is thinking…</span></div>',
+                    unsafe_allow_html=True,
+                )
+                st.session_state["_stream_spinner_ph"] = spinner_ph
+
+            # Body placeholder — the fragment writes streamed text here.
+            body_ph = st.empty()
+            if st.session_state.get("_stream_body_ph") is None:
+                st.session_state["_stream_body_ph"] = body_ph
+
+            # Launch the polling fragment. It will auto-rerun every 250 ms,
+            # drain the queue, and finalise (add_message once) when done.
+            _stream_fragment(
+                p_user_msg=p_user_msg,
+                p_model_key=p_model_key,
+                no_charge=no_charge,
+                chat_id=st.session_state.chat_id,
+                ai_name_frag=ai_name,
             )
 
-            p_user_msg = pending["user_msg"]
-            p_model_key = pending.get("model_key", DEFAULT_MODEL_KEY)
-            model_id = MODELS[p_model_key]["model_id"]
-
-            recent_messages = get_messages(st.session_state.chat_id, limit=40)
-            notes = search_knowledge(p_user_msg)
-
-            knowledge_block = ""
-            if notes:
-                knowledge_block = NL + "Shared privacy-safe knowledge learned from users:" + NL
-                for note in notes:
-                    knowledge_block += "- " + note["topic"] + ": " + note["summary"] + NL
-
-            system_text = build_system_prompt("Medium") + knowledge_block
-            turns = [(m["role"], m["content"]) for m in recent_messages]
-
-            # provider-routed by the picked model (Supreme/Everyday/Lite)
-            ok, reply = generate_reply(system_text, turns, model_id)
-
-    add_message(st.session_state.chat_id, "assistant", reply)
-
-    if ok:
-        learn_from_exchange(p_user_msg)
-    else:
-        # a failed answer doesn't count against today's limit (no-op for Owner)
-        refund_model_use(user["id"], p_model_key)
-
-    st.session_state.pending = None
-    st.rerun()
-
 elif pending:
-    # pending belongs to a chat the user navigated away from — drop it
+    # pending belongs to a chat the user navigated away from — drop it AND
+    # tear down any in-flight worker. Without this, the stale _stream_* state
+    # would make the worker-start guard skip a new worker and the fragment
+    # could persist the old chat's text into the newly-opened chat.
+    ev = st.session_state.get("_stream_cancel_event")
+    if ev is not None:
+        ev.set()  # tell the orphaned worker to stop pulling chunks
+    for key in ("_stream_queue", "_stream_cancel_event", "_stream_acc",
+                "_stream_done", "_stream_spinner_ph", "_stream_body_ph",
+                "_stream_user_id", "_stream_thread", "_stream_flags",
+                "_stream_finalised"):
+        st.session_state.pop(key, None)
     st.session_state.pending = None
