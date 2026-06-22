@@ -236,16 +236,22 @@ def init_db():
     add_column_if_missing("users", "credits_date", "TEXT NOT NULL DEFAULT ''")
 
 
-def get_setting(key):
+@st.cache_data(ttl=300)
+def _load_settings():
+    """Load ALL settings in one query, cached process-wide. get_setting() is
+    called many times per render; without this each call was a separate Turso
+    round-trip. Invalidated by set_setting()."""
     conn = connect()
     cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key=?", (key,))
-    row = cur.fetchone()
+    rows = cur.execute("SELECT key, value FROM settings").fetchall()
     conn.close()
+    return {r["key"]: r["value"] for r in rows}
 
-    if row:
-        return row["value"]
 
+def get_setting(key):
+    val = _load_settings().get(key)
+    if val is not None:
+        return val
     return DEFAULT_SETTINGS.get(key, "")
 
 
@@ -258,9 +264,24 @@ def set_setting(key, value):
     )
     conn.commit()
     conn.close()
+    _load_settings.clear()  # invalidate the cache so the change is visible
 
 
-init_db()
+@st.cache_resource(show_spinner=False)
+def _ensure_db_ready():
+    """Run schema setup exactly ONCE per server process.
+
+    Streamlit re-executes this whole script on every interaction. init_db()
+    fires ~20 statements (CREATE TABLE + column checks + default settings);
+    against a remote Turso DB each is a network round-trip, so running it every
+    rerun added seconds of lag per click. @st.cache_resource caches the result
+    process-wide, so the schema work happens only on the first run.
+    """
+    init_db()
+    return True
+
+
+_ensure_db_ready()
 
 
 # =========================================================
