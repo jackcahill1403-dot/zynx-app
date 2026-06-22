@@ -20,13 +20,13 @@ import datetime
 import streamlit as st
 from google import genai
 
+# Persistent storage layer: Turso/libSQL on the cloud, local SQLite for dev.
+from zynx_db import connect, APP_DB
+
 # =========================================================
 # ZYNX CONFIG
 # =========================================================
 
-# Portable DB path: resolves to this file's folder, so it works locally on
-# Windows AND on Linux cloud hosting (Streamlit Community Cloud, etc.).
-APP_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zynx_v2.db")
 OWNER_EMAIL = "zynx.ai@outlook.com"
 
 DEFAULT_SETTINGS = {
@@ -125,12 +125,6 @@ def now():
 
 def today():
     return datetime.date.today().isoformat()
-
-
-def connect():
-    conn = sqlite3.connect(APP_DB, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def add_column_if_missing(table, column, definition):
