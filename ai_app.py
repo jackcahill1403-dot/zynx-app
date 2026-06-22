@@ -300,12 +300,27 @@ def ui():
         --mono:  "IBM Plex Mono", ui-monospace, monospace;
     }
 
-    /* ---- hide Streamlit chrome ---- */
-    #MainMenu, header, footer,
+    /* ---- hide Streamlit chrome (but KEEP the sidebar expand control) ---- */
+    #MainMenu, footer,
     [data-testid="stToolbar"],
     [data-testid="stDeployButton"],
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"] { display: none !important; }
+
+    /* header must stay so the collapsed-sidebar expand arrow exists; blend it */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        box-shadow: none !important;
+        height: 0 !important;
+    }
+    /* the ">" button shown when the sidebar is collapsed — force it visible */
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important;
+        top: 0.6rem !important; left: 0.6rem !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] button {
+        color: var(--white) !important;
+    }
 
     /* ---- base ---- */
     html, body, .stApp {
