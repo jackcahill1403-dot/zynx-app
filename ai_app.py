@@ -2636,7 +2636,9 @@ def handle_owner_command(text, user):
         conn.close()
         return (
             "**DB status**\n\n"
+            f"- Build: `{s.get('build')}`\n"
             f"- Mode: `{s['mode']}`\n"
+            f"- Primary host: `{s.get('primary_host')}`\n"
             f"- libsql: `{s['libsql_version']}`\n"
             f"- Initial connect: `{s['connect_ms']}` ms\n"
             f"- Initial sync: `{s['initial_sync_ms']}` ms\n"

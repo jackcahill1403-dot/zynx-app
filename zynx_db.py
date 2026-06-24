@@ -20,11 +20,16 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 # to the primary after each commit so they survive a server restart.
 _IS_REPLICA = False
 
+# Bump on each deploy so /dbstatus confirms which code the live app is running.
+DB_BUILD = "2026-06-24-writepath"
+
 # Diagnostics (Phase-1 evidence). Filled in by _make_raw(); read via db_status().
 _DIAG = {
+    "build": DB_BUILD,
     "mode": "uninitialized",   # "replica" | "remote-direct" | "local-sqlite"
     "libsql_version": None,
     "replica_error": None,     # why the embedded replica fell back, if it did
+    "primary_host": None,      # Turso primary host (region lives in the name)
     "connect_ms": None,        # time to open the connection
     "initial_sync_ms": None,   # time for the first replica sync()
 }
@@ -160,6 +165,9 @@ def _make_raw():
     if using_turso():
         import libsql  # lazy: only needed on the cloud
         _DIAG["libsql_version"] = getattr(libsql, "__version__", "?")
+        # host only (no token) — the region is encoded in the hostname, e.g.
+        # ...aws-eu-west-1.turso.io; tells us if the primary is far from the app.
+        _DIAG["primary_host"] = TURSO_URL.split("://")[-1].split("/")[0]
 
         # Preferred: an embedded replica. A local SQLite file is kept in sync
         # with the remote Turso primary, so every read is served locally (~1ms)
