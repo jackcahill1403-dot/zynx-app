@@ -21,7 +21,7 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 _IS_REPLICA = False
 
 # Bump on each deploy so /dbstatus confirms which code the live app is running.
-DB_BUILD = "2026-06-24-writepath"
+DB_BUILD = "2026-06-24-batched-writes"
 
 # Diagnostics (Phase-1 evidence). Filled in by _make_raw(); read via db_status().
 _DIAG = {

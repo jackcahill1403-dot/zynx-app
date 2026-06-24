@@ -1973,6 +1973,11 @@ def touch_chat(chat_id):
 
 
 def add_message(chat_id, role, content):
+    # Insert the message AND touch the chat's updated_at in a single commit.
+    # Each remote Turso commit is a network round-trip (~1s on the live host),
+    # so folding the chat-touch in here (instead of a separate touch_chat()
+    # commit) halves the round-trips per message.
+    ts = now()
     conn = connect()
     cur = conn.cursor()
     cur.execute(
@@ -1980,11 +1985,41 @@ def add_message(chat_id, role, content):
         INSERT INTO messages (chat_id, role, content, created_at)
         VALUES (?, ?, ?, ?)
         """,
-        (chat_id, role, content, now())
+        (chat_id, role, content, ts)
+    )
+    cur.execute(
+        "UPDATE chats SET updated_at=? WHERE id=?",
+        (ts, chat_id)
     )
     conn.commit()
     conn.close()
-    touch_chat(chat_id)
+
+
+def record_user_turn(chat_id, content, user_id, model_key):
+    """Phase-A write, batched into ONE commit: insert the user's message,
+    touch the chat, and increment the per-model daily usage. Replaces the
+    separate add_message() + increment_model_use() calls (each was its own
+    remote round-trip) on the send hot path."""
+    ts = now()
+    td = today()
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, 'user', ?, ?)",
+        (chat_id, content, ts)
+    )
+    cur.execute("UPDATE chats SET updated_at=? WHERE id=?", (ts, chat_id))
+    cur.execute(
+        "UPDATE usage SET count=count+1 WHERE user_id=? AND model_key=? AND use_date=?",
+        (user_id, model_key, td)
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            "INSERT INTO usage (user_id, model_key, use_date, count) VALUES (?, ?, ?, 1)",
+            (user_id, model_key, td)
+        )
+    conn.commit()
+    conn.close()
 
 
 def get_messages(chat_id, limit=None):
@@ -3378,9 +3413,9 @@ if user_msg:
             )
         st.stop()
 
-    # save the user's turn, count the use, then rerun so it appears immediately
-    add_message(st.session_state.chat_id, "user", user_msg)
-    increment_model_use(user["id"], model_key)
+    # save the user's turn + count the use in ONE commit, then rerun so it
+    # appears immediately (one remote round-trip instead of three).
+    record_user_turn(st.session_state.chat_id, user_msg, user["id"], model_key)
     st.session_state.pending = {
         "chat_id": st.session_state.chat_id,
         "user_msg": user_msg,
