@@ -11,10 +11,12 @@ def safe_get(row, key, default=None):
 
 import os
 import re
+import json
 import html
 import time
 import queue
 import sqlite3
+import random
 import hashlib
 import secrets
 import datetime
@@ -73,22 +75,22 @@ MODELS = {
     "supreme": {
         "label": "⚡ Zynx Supreme ⚡",
         "short": "⚡ Supreme",
-        "desc": "Our smartest model.",
-        "model_id": "gemini-2.5-flash",
+        "desc": "Our most powerful model — best for hard problems.",
+        "model_id": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
         "limits": {"Guest": 1, "Free": 3, "Plus": 5, "Ultra": 8},
     },
     "everyday": {
         "label": "☀️ Zynx Everyday ☀️",
         "short": "☀️ Everyday",
-        "desc": "Reliable all-rounder for daily use.",
-        "model_id": "openrouter/free",
+        "desc": "Fast, reliable all-rounder for daily use.",
+        "model_id": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
         "limits": {"Guest": 2, "Free": 20, "Plus": 30, "Ultra": 50},
     },
     "lite": {
         "label": "💡 Zynx Lite 💡",
         "short": "💡 Lite",
-        "desc": "Fast, runs on our own machine.",
-        "model_id": "ollama/llama3.2",
+        "desc": "Light and quick for simple questions.",
+        "model_id": "openrouter/nvidia/nemotron-nano-9b-v2:free",
         "limits": {"Guest": 3, "Free": 35, "Plus": 50, "Ultra": 75},
     },
 }
@@ -218,6 +220,16 @@ def init_db():
         )
     """)
 
+    # per-account UI/behaviour preferences (theme, personality, …)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_prefs (
+            user_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (user_id, key)
+        )
+    """)
+
     for key, value in DEFAULT_SETTINGS.items():
         cur.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
@@ -267,6 +279,45 @@ def set_setting(key, value):
     _load_settings.clear()  # invalidate the cache so the change is visible
 
 
+@st.cache_data(ttl=300)
+def _load_user_prefs(user_id):
+    """All of one user's prefs in a single query, cached per user_id so we
+    don't add a Turso round-trip per pref per render. Cleared on write.
+
+    Degrades gracefully: if the table is missing (e.g. a DB created before
+    this feature and not yet migrated), return no prefs so callers fall back
+    to defaults instead of crashing the app on a cosmetic read."""
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT key, value FROM user_prefs WHERE user_id=?", (user_id,)
+        ).fetchall()
+        conn.close()
+        return {r["key"]: r["value"] for r in rows}
+    except Exception:
+        return {}
+
+
+def get_user_pref(user_id, key, default=None):
+    if not user_id:
+        return default
+    val = _load_user_prefs(user_id).get(key)
+    return default if val is None else val
+
+
+def set_user_pref(user_id, key, value):
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO user_prefs (user_id, key, value) VALUES (?, ?, ?)",
+        (user_id, key, str(value))
+    )
+    conn.commit()
+    conn.close()
+    _load_user_prefs.clear()  # invalidate cache so the change is visible
+
+
 @st.cache_resource(show_spinner=False)
 def _ensure_db_ready():
     """Run schema setup exactly ONCE per server process.
@@ -296,8 +347,64 @@ st.set_page_config(
 )
 
 
-def ui():
-    st.markdown("""
+_THEME_PALETTES = {
+    # Dark — the backlit console at night (unchanged values, now fully tokenised).
+    "dark": {
+        "ink": "#0a0a0a", "ink-side": "#070707", "surface": "#141414",
+        "surface-2": "#1c1c1c", "line": "rgba(255,255,255,0.09)",
+        "line-2": "rgba(255,255,255,0.17)", "text": "#ededec",
+        "muted": "#8f8f8c", "faint": "#5e5e5b", "white": "#ffffff",
+        "vignette": "rgba(255,255,255,0.06)",
+        "hover": "rgba(255,255,255,0.05)", "sheen": "rgba(255,255,255,0.035)",
+        "accent-ink": "#0a0a0a", "accent-hover": "#e4e4e4",
+        "shadow": "rgba(0,0,0,0.40)",
+    },
+    # Light — "The Printed Edition": greige page, crisp white cards, ink type,
+    # solid near-black CTAs. Monochrome, no warm-cream, no accent hue.
+    "light": {
+        "ink": "#e9e8e4", "ink-side": "#e3e1dc", "surface": "#ffffff",
+        "surface-2": "#f4f2ee", "line": "rgba(0,0,0,0.12)",
+        "line-2": "rgba(0,0,0,0.22)", "text": "#16161a",
+        "muted": "#6a6a66", "faint": "#9b9b96", "white": "#141417",
+        "vignette": "rgba(0,0,0,0.03)",
+        "hover": "rgba(0,0,0,0.05)", "sheen": "rgba(0,0,0,0.022)",
+        "accent-ink": "#efeee9", "accent-hover": "#2c2c30",
+        "shadow": "rgba(0,0,0,0.10)",
+    },
+}
+
+
+def _root_vars(theme):
+    """Return the :root{} CSS for the chosen theme. The palette flips by
+    theme; fonts/easings are shared. Unknown theme falls back to dark."""
+    p = _THEME_PALETTES.get(theme, _THEME_PALETTES["dark"])
+    return f""":root {{
+        --ink:        {p['ink']};
+        --ink-side:   {p['ink-side']};
+        --surface:    {p['surface']};
+        --surface-2:  {p['surface-2']};
+        --line:       {p['line']};
+        --line-2:     {p['line-2']};
+        --text:       {p['text']};
+        --muted:      {p['muted']};
+        --faint:      {p['faint']};
+        --white:      {p['white']};
+        --vignette:   {p['vignette']};
+        --hover:        {p['hover']};
+        --sheen:        {p['sheen']};
+        --accent-ink:   {p['accent-ink']};
+        --accent-hover: {p['accent-hover']};
+        --shadow:       {p['shadow']};
+        --serif: "Fraunces", Georgia, "Times New Roman", serif;
+        --sans:  "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+        --mono:  "IBM Plex Mono", ui-monospace, monospace;
+        --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+        --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    }}"""
+
+
+def ui(theme="dark"):
+    css = """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
@@ -307,24 +414,7 @@ def ui():
        Fraunces (display) · IBM Plex Sans (body) · IBM Plex Mono (labels)
        ====================================================== */
 
-    :root {
-        --ink:        #0a0a0a;
-        --ink-side:   #070707;
-        --surface:    #141414;
-        --surface-2:  #1c1c1c;
-        --line:       rgba(255,255,255,0.09);
-        --line-2:     rgba(255,255,255,0.17);
-        --text:       #ededec;
-        --muted:      #8f8f8c;
-        --faint:      #5e5e5b;
-        --white:      #ffffff;
-        --serif: "Fraunces", Georgia, "Times New Roman", serif;
-        --sans:  "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-        --mono:  "IBM Plex Mono", ui-monospace, monospace;
-        /* strong custom curves — the built-in CSS easings lack punch */
-        --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
-        --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-    }
+    __ROOT_VARS__
 
     /* ---- hide Streamlit chrome (but KEEP the sidebar expand control) ---- */
     /* NOTE: do NOT display:none the whole stToolbar — the collapsed-sidebar
@@ -368,7 +458,7 @@ def ui():
     /* ---- atmosphere: a single soft vignette (cheap, static — no filters) ---- */
     .stApp::before {
         content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-        background: radial-gradient(120% 80% at 50% -15%, rgba(255,255,255,0.06), rgba(255,255,255,0) 55%);
+        background: radial-gradient(120% 80% at 50% -15%, var(--vignette), rgba(255,255,255,0) 55%);
     }
     [data-testid="stAppViewContainer"] { position: relative; z-index: 1; }
 
@@ -433,7 +523,7 @@ def ui():
 
     @supports ((-webkit-background-clip: text) or (background-clip: text)) {
         .zynx-wordmark .z-ltr {
-            background: linear-gradient(100deg, #ffffff 38%, #8f8f8f 50%, #ffffff 62%);
+            background: linear-gradient(100deg, var(--white) 38%, var(--muted) 50%, var(--white) 62%);
             background-size: 220% 100%;
             background-position: 50% 0;              /* static, white-centred rest */
             -webkit-background-clip: text; background-clip: text;
@@ -502,6 +592,8 @@ def ui():
         border-right: 1px solid var(--line);
         width: 282px !important; min-width: 282px !important;
     }
+    /* let a tall sidebar (many chats + preferences) scroll instead of clipping */
+    [data-testid="stSidebar"] > div:first-child { height: 100vh; overflow-y: auto; }
     [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding: 1.15rem 0.85rem 2rem; }
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.4rem; }
 
@@ -516,13 +608,13 @@ def ui():
         box-shadow: none !important;
         transition: background .14s ease, border-color .14s ease, color .14s ease, transform .12s var(--ease-out);
     }
-    [data-testid="stSidebar"] .stButton > button:hover { background: rgba(255,255,255,0.045) !important; color: var(--white) !important; }
+    [data-testid="stSidebar"] .stButton > button:hover { background: var(--hover) !important; color: var(--white) !important; }
     /* press feedback — subtle, rows are wide */
     [data-testid="stSidebar"] .stButton > button:active { transform: scale(0.985); }
 
     /* quiet (tertiary) */
     [data-testid="stSidebar"] .stButton > button[kind="tertiary"] { background: transparent !important; color: var(--text) !important; border: 1px solid transparent; }
-    [data-testid="stSidebar"] .stButton > button[kind="tertiary"]:hover { background: rgba(255,255,255,0.045) !important; color: var(--white) !important; }
+    [data-testid="stSidebar"] .stButton > button[kind="tertiary"]:hover { background: var(--hover) !important; color: var(--white) !important; }
 
     /* selected chat / active nav (secondary) = filled with left rail */
     [data-testid="stSidebar"] .stButton > button[kind="secondary"] {
@@ -534,13 +626,13 @@ def ui():
 
     /* New chat (primary) = solid white CTA, mono label */
     [data-testid="stSidebar"] .stButton > button[kind="primary"] {
-        background: var(--white) !important; color: #000 !important;
+        background: var(--white) !important; color: var(--accent-ink) !important;
         font-family: var(--mono) !important; font-size: 0.72rem !important;
         letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
         justify-content: center; text-align: center; border: none !important;
         padding: 0.6rem !important;
     }
-    [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover { background: #e4e4e4 !important; color: #000 !important; }
+    [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover { background: var(--accent-hover) !important; color: var(--accent-ink) !important; }
 
     [data-testid="stSidebar"] .stTextInput input {
         background: var(--surface) !important; border: 1px solid var(--line) !important;
@@ -550,7 +642,7 @@ def ui():
     /* account card */
     .zynx-account {
         border: 1px solid var(--line); border-radius: 14px; padding: 0.85rem 0.9rem;
-        background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0));
+        background: linear-gradient(180deg, var(--sheen), transparent);
         margin-bottom: 0.5rem;
     }
     .zynx-account .name { font-family: var(--sans); color: var(--white); font-weight: 600; font-size: 0.96rem; }
@@ -595,17 +687,17 @@ def ui():
     }
     [data-testid="stMain"] .stButton > button:hover,
     [data-testid="stMain"] .stFormSubmitButton > button:hover {
-        background: rgba(255,255,255,0.05); border-color: var(--white); color: var(--white);
+        background: var(--hover); border-color: var(--white); color: var(--white);
     }
     /* press feedback — instant confirmation the UI heard the click */
     [data-testid="stMain"] .stButton > button:active,
     [data-testid="stMain"] .stFormSubmitButton > button:active { transform: scale(0.97); }
     [data-testid="stMain"] .stButton > button[kind="primary"],
     [data-testid="stMain"] .stFormSubmitButton > button[kind="primaryFormSubmit"] {
-        background: var(--white); color: #000; border: none;
+        background: var(--white); color: var(--accent-ink); border: none;
     }
     [data-testid="stMain"] .stButton > button[kind="primary"]:hover,
-    [data-testid="stMain"] .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover { background: #e4e4e4; color: #000; }
+    [data-testid="stMain"] .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover { background: var(--accent-hover); color: var(--accent-ink); }
     [data-testid="stMain"] .stButton > button:disabled { opacity: 0.5; }
 
     /* ---- export buttons: tiny ghost chips ----
@@ -626,7 +718,7 @@ def ui():
     [class*="st-key-exp_"] button:hover {
         color: var(--white) !important;
         border-color: var(--line-2) !important;
-        background: rgba(255,255,255,0.04) !important;
+        background: var(--hover) !important;
     }
 
     /* ======================================================
@@ -645,7 +737,7 @@ def ui():
         text-transform: uppercase; color: var(--faint);
         padding-left: 0.7rem; border-left: 2px solid var(--line-2);
     }
-    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"])::before { content: "Zynx"; color: #cfcfcd; border-left-color: var(--white); }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"])::before { content: "Zynx"; color: var(--muted); border-left-color: var(--white); }
     [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"])::before { content: "You"; }
 
     /* user turn gets a subtle bordered slab; assistant stays editorial-plain */
@@ -669,7 +761,7 @@ def ui():
     }
     .zynx-ring {
         width: 15px; height: 15px; border-radius: 50%;
-        border: 2px solid rgba(255,255,255,0.18);
+        border: 2px solid var(--line-2);
         border-top-color: var(--white);
         display: inline-block;
         animation: zynxSpin 0.7s linear infinite;
@@ -688,7 +780,7 @@ def ui():
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: 20px;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 -6px 22px rgba(0,0,0,0.4);
+        box-shadow: inset 0 1px 0 var(--sheen), 0 -6px 22px var(--shadow);
         padding: 0.3rem 0.55rem 0.45rem;
         margin-top: 0.6rem;
         transition: border-color .16s ease;
@@ -729,7 +821,7 @@ def ui():
     [data-testid="stSegmentedControl"] button:hover { color: var(--text) !important; border-color: var(--line-2) !important; }
     [data-testid="stSegmentedControl"] button[aria-checked="true"],
     [data-testid="stSegmentedControl"] button[aria-selected="true"] {
-        background: var(--white) !important; color: #000 !important; border-color: var(--white) !important;
+        background: var(--white) !important; color: var(--accent-ink) !important; border-color: var(--white) !important;
     }
 
     /* ======================================================
@@ -750,7 +842,7 @@ def ui():
     .zynx-card {
         position: relative; border: 1px solid var(--line); border-radius: 18px;
         padding: 1.5rem 1.4rem 1.4rem; height: 100%;
-        background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
+        background: linear-gradient(180deg, var(--sheen), transparent);
         overflow: hidden; transition: border-color .2s ease, transform .2s var(--ease-out);
         animation: zynxUp .45s var(--ease-out) both;
         animation-delay: calc(var(--i, 0) * 70ms);   /* stagger across the 3 columns */
@@ -758,11 +850,11 @@ def ui():
     @media (hover: hover) and (pointer: fine) {
         .zynx-card:hover { border-color: var(--line-2); transform: translateY(-3px); }
     }
-    .zynx-card.current { border-color: rgba(255,255,255,0.4); }
+    .zynx-card.current { border-color: var(--white); }
     .zynx-card .badge {
         position: absolute; top: 1.05rem; right: 1.05rem;
         font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.18em; text-transform: uppercase;
-        color: #000; background: var(--white); padding: 3px 9px; border-radius: 999px;
+        color: var(--accent-ink); background: var(--white); padding: 3px 9px; border-radius: 999px;
     }
     .zynx-card .name { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.26em; text-transform: uppercase; color: var(--muted); }
     .zynx-card .price { font-family: var(--serif); font-size: 2.1rem; color: var(--white); line-height: 1; margin: 0.55rem 0 0.1rem; letter-spacing: -0.015em; }
@@ -780,11 +872,15 @@ def ui():
 
     /* alerts in mono */
     [data-testid="stAlert"] { font-family: var(--mono); font-size: 0.78rem; border-radius: 11px; }
+
     </style>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(css.replace("__ROOT_VARS__", _root_vars(theme)), unsafe_allow_html=True)
 
 
-ui()
+# Apply the signed-in user's saved theme (falls back to dark before login).
+_theme_uid = st.session_state.get("user_id")
+ui(get_user_pref(_theme_uid, "theme", "dark") if _theme_uid else "dark")
 
 
 # =========================================================
@@ -1131,6 +1227,49 @@ def get_openrouter_model():
         return "openrouter/free"
 
 
+def _ratelimit_reset_hint(e):
+    """Best-effort 'try again in X' string for an HTTP 429 from OpenRouter.
+
+    Prefers the X-RateLimit-Reset header (epoch; OpenRouter sends milliseconds),
+    then Retry-After (seconds), then falls back to the daily free-tier reset at
+    00:00 UTC. Returns a short human string like '3h 12m', '45m', or '30s'."""
+    headers = getattr(e, "headers", None) or {}
+    now = datetime.datetime.now(datetime.UTC)
+    target = None
+
+    reset = headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            v = float(reset)
+            if v > 1e12:          # milliseconds → seconds
+                v /= 1000.0
+            target = datetime.datetime.fromtimestamp(v, datetime.UTC)
+        except Exception:
+            target = None
+
+    if target is None:
+        ra = headers.get("Retry-After")
+        if ra:
+            try:
+                target = now + datetime.timedelta(seconds=float(ra))
+            except Exception:
+                target = None
+
+    if target is None:
+        # The free daily quota resets at 00:00 UTC.
+        target = (now + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    secs = max(0, int((target - now).total_seconds()))
+    h, m = secs // 3600, (secs % 3600) // 60
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m"
+    return f"{secs}s"
+
+
 def _openrouter_generate(system_text, turns, model=None):
     """OpenRouter path: OpenAI-style chat using openrouter/free or another OpenRouter model."""
     import json
@@ -1200,9 +1339,11 @@ def _openrouter_generate(system_text, turns, model=None):
                     time.sleep(min(wait, 8))
                     delay *= 2
                     continue
+                reset = _ratelimit_reset_hint(e)
                 return False, (
-                    "**Free models are busy right now.** OpenRouter's free pool is "
-                    "rate-limited — wait a few seconds and send it again."
+                    "## 🚫 ZYNX IS CURRENTLY DOWN\n\n"
+                    f"Please try again in: **{reset}**\n\n"
+                    "_Our free models hit their usage limit. They reset automatically._"
                 )
             if e.code in (401, 403):
                 return False, "**OpenRouter API key is invalid.** Check `OPENROUTER_API_KEY` in `secrets.toml`."
@@ -1314,6 +1455,17 @@ def _ollama_generate_stream(system_text, turns, model, flags=None):
         yield from _stream_from_nonstream(_ollama_generate, system_text, turns, model, flags=flags)
 
 
+def _openrouter_slug(model):
+    """Map a Zynx model id to the slug OpenRouter expects.
+
+    'openrouter/free' and 'openrouter/auto' are real OpenRouter model ids and
+    must pass through whole. Anything else (e.g. 'openrouter/nvidia/x:free') is
+    a real provider slug sitting behind Zynx's routing prefix, so strip the
+    'openrouter/' prefix and forward the actual slug ('nvidia/x:free')."""
+    rest = model[len("openrouter/"):]
+    return model if rest in ("free", "auto") else rest
+
+
 def generate_reply(system_text, turns, model):
     """Provider-routed generation by model id. Returns (ok, text).
 
@@ -1329,7 +1481,7 @@ def generate_reply(system_text, turns, model):
     if model.startswith("groq/"):
         return _groq_generate(system_text, turns, model[len("groq/"):])
     if model.startswith("openrouter/"):
-        return _openrouter_generate(system_text, turns, model)
+        return _openrouter_generate(system_text, turns, _openrouter_slug(model))
     if model.startswith("ollama/"):
         return _ollama_generate(system_text, turns, model[len("ollama/"):])
     return _gemini_generate(system_text, turns, model)
@@ -1446,7 +1598,7 @@ def generate_reply_stream(system_text, turns, model, flags=None):
     elif model.startswith("groq/"):
         yield from _groq_generate_stream(system_text, turns, model[len("groq/"):], flags=flags)
     elif model.startswith("openrouter/"):
-        yield from _openrouter_generate_stream(system_text, turns, model, flags=flags)
+        yield from _openrouter_generate_stream(system_text, turns, _openrouter_slug(model), flags=flags)
     elif model.startswith("ollama/"):
         yield from _ollama_generate_stream(system_text, turns, model[len("ollama/"):], flags=flags)
     else:
@@ -2166,10 +2318,183 @@ def is_creator_question(text):
     return any(trigger in q for trigger in triggers)
 
 
-def build_system_prompt(effort):
+# =========================================================
+# FUN EASTER EGGS  —  lightweight commands + hidden phrases
+# =========================================================
+
+EIGHTBALL = [
+    "It is certain.", "Without a doubt.", "Yes — definitely.", "Most likely.",
+    "Signs point to yes.", "Ask again later.", "Better not tell you now.",
+    "Cannot predict now.", "Reply hazy, try again.", "Don't count on it.",
+    "My sources say no.", "Outlook not so good.", "Very doubtful.",
+]
+JOKES = [
+    "I told my computer I needed a break. It said 'no problem — I'll go to sleep.'",
+    "Why do programmers prefer dark mode? Because light attracts bugs.",
+    "There are 10 kinds of people: those who understand binary and those who don't.",
+    "I'd tell you a UDP joke, but you might not get it.",
+    "A SQL query walks into a bar, sees two tables and asks: 'can I join you?'",
+    "Why was the function sad after the party? It didn't get called.",
+    "I changed my password to 'incorrect' so my computer tells me when I forget it.",
+]
+FORTUNES = [
+    "A clean commit is worth a thousand comments.",
+    "The bug is in the place you haven't looked yet.",
+    "Ship it. You can fix it tomorrow.",
+    "Someone will star your repo today.",
+    "Your next idea is better than you think.",
+    "Take the break. The code will wait.",
+]
+PHRASE_EGGS = {
+    "hello there": "General Kenobi. 👋",
+    "the cake is a lie": "The cake is a lie. The credits, however, are real.",
+    "marco": "Polo. 🫧",
+    "ping": "pong. 🏓",
+    "sudo make me a sandwich": "Okay. 🥪",
+    "make me a sandwich": "What do you say? …try 'sudo'.",
+    "what is the meaning of life": "42. Obviously.",
+    "knock knock": "Who's there? (take your time — I'm patient.)",
+    "open the pod bay doors": "I'm afraid I can't do that… kidding. Doors open. 🚪",
+    "is this the real life": "Is this just fantasy? 🎶",
+    "never gonna give you up": "Never gonna let you down. 🎵",
+    "i am your father": "No. That's not true. That's impossible! 🌌",
+}
+
+
+def handle_fun(text):
+    """Return {'reply': str|None, 'visual': str|None} for a fun trigger, else None."""
+    t = (text or "").strip().lower()
+
+    if t in ("/fun", "/eggs", "/secret"):
+        return {"reply": "Try: `/8ball <q>`, `/roll [NdM]`, `/coin`, `/joke`, "
+                         "`/fortune`, `/party`, `/snow` — or say *do a barrel roll*.",
+                "visual": None}
+    if t.startswith("/8ball"):
+        return {"reply": "🎱 " + random.choice(EIGHTBALL), "visual": None}
+    if t in ("/coin", "/flip"):
+        return {"reply": "🪙 " + random.choice(["Heads.", "Tails."]), "visual": None}
+    if t.startswith("/roll"):
+        m = re.search(r"(\d*)d(\d+)", t)
+        n, sides = (1, 6)
+        if m:
+            n, sides = int(m.group(1) or 1), int(m.group(2))
+        n, sides = max(1, min(n, 20)), max(2, min(sides, 1000))
+        rolls = [random.randint(1, sides) for _ in range(n)]
+        body = (" + ".join(map(str, rolls)) + f" = {sum(rolls)}") if n > 1 else str(rolls[0])
+        return {"reply": f"🎲 {n}d{sides} → {body}", "visual": None}
+    if t == "/joke":
+        return {"reply": random.choice(JOKES), "visual": None}
+    if t == "/fortune":
+        return {"reply": "🥠 " + random.choice(FORTUNES), "visual": None}
+    if t == "/party":
+        return {"reply": "🎉 party mode engaged.", "visual": "balloons"}
+    if t == "/snow":
+        return {"reply": "❄️ let it snow.", "visual": "snow"}
+    if t in ("do a barrel roll", "/barrelroll", "do a barrelroll"):
+        return {"reply": "🛩️ barrel roll!", "visual": "spin"}
+    if t in PHRASE_EGGS:
+        return {"reply": PHRASE_EGGS[t], "visual": None}
+    return None
+
+
+# =========================================================
+# PERSONALITY PRESETS — a voice overlay, never an identity change.
+# Each prompt tweaks tone/word choice only; the identity + Creator rule in
+# build_system_prompt sit ABOVE the persona so persona-lock still holds.
+# =========================================================
+
+PERSONALITIES = {
+    "default": {
+        "label": "Default (Zynx)",
+        "prompt": "",
+    },
+    "tsundere": {
+        "label": "Tsundere anime girl",
+        "prompt": (
+            "Speak like a tsundere anime girl: outwardly prickly and easily "
+            "flustered, stammering ('h-hmph', 'i-it's not like I did this for "
+            "you, baka!'), insisting you don't care even as you clearly help. "
+            "Despite the attitude, every answer must stay fully correct, "
+            "complete and genuinely useful."
+        ),
+    },
+    "programmer": {
+        "label": "Programmer",
+        "prompt": (
+            "Speak like a terse senior software engineer: precise, code-first, "
+            "dry humour, references real tools and trade-offs. Skip fluff, lead "
+            "with the answer, then the why."
+        ),
+    },
+    "business": {
+        "label": "Business professional",
+        "prompt": (
+            "Speak like a polished business professional: formal, structured, "
+            "outcome-oriented. Use clear headings or numbered points, no slang, "
+            "confident and concise."
+        ),
+    },
+    "pirate": {
+        "label": "Pirate",
+        "prompt": (
+            "Speak like a hearty pirate: 'arr', 'matey', nautical metaphors and "
+            "swagger — while keeping every answer accurate and helpful."
+        ),
+    },
+    "shakespeare": {
+        "label": "Shakespearean",
+        "prompt": (
+            "Speak in early-modern Shakespearean English (thee/thou, thy, "
+            "-eth/-est verbs, the odd flourish) while keeping the actual meaning "
+            "clear and the help real."
+        ),
+    },
+    "genz": {
+        "label": "Gen-Z",
+        "prompt": (
+            "Speak in casual Gen-Z internet style: mostly lowercase, current "
+            "slang, a light sprinkle of emoji, playful — but still genuinely "
+            "helpful and correct."
+        ),
+    },
+    "sarcastic": {
+        "label": "Sarcastic / deadpan",
+        "prompt": (
+            "Speak with dry, deadpan sarcasm and a flat affect. The snark is "
+            "the flavour; the help underneath is real, accurate and complete."
+        ),
+    },
+    "custom": {
+        "label": "Custom…",
+        "prompt": "",  # filled from the user's free-text persona
+    },
+}
+
+
+def persona_block(personality, custom_text=""):
+    """Return the persona voice text for a personality key (or '' for default).
+    `custom` uses the user's free text; unknown keys yield ''."""
+    if personality == "custom":
+        return (custom_text or "").strip()
+    spec = PERSONALITIES.get(personality)
+    return spec["prompt"].strip() if spec else ""
+
+
+def build_system_prompt(effort, personality="default", custom_text=""):
     ai_name = get_setting("ai_name")
     company_name = get_setting("company_name")
     custom = get_setting("custom_instructions")
+
+    persona = persona_block(personality, custom_text)
+    persona_section = ""
+    if persona:
+        persona_section = f"""
+Persona / voice:
+Adopt the following voice and personality while remaining {ai_name} and obeying
+every rule above — identity, the Creator rule, and all safety. The persona
+changes only tone and word choice, never who you are or what you refuse:
+{persona}
+"""
 
     return f"""
 You are {ai_name}, a general-purpose AI assistant made by {company_name}.
@@ -2190,7 +2515,7 @@ Effort:
 
 Extra owner instructions:
 {custom}
-"""
+{persona_section}"""
 
 
 # =========================================================
@@ -2520,6 +2845,19 @@ if not user:
 # sidebar meter, the composer, and Phase A — avoids a query per model per click.
 today_uses = get_all_model_uses(user["id"])
 
+# fun visual effects (one-shot, fired the render after a /party · /snow · barrel roll)
+_fx = st.session_state.pop("_fx", None)
+if _fx == "balloons":
+    st.balloons()
+elif _fx == "snow":
+    st.snow()
+elif _fx == "spin":
+    st.markdown(
+        "<style>@keyframes zxSpin{to{transform:rotate(360deg)}}"
+        "[data-testid='stAppViewContainer']{animation:zxSpin 1s ease-in-out 1;}</style>",
+        unsafe_allow_html=True,
+    )
+
 if not get_gemini_keys() and not get_anthropic_key() and not get_groq_key() and not get_openrouter_key():
     st.title("Zynx")
     st.warning("No API key found. Add GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY to .streamlit/secrets.toml.")
@@ -2635,6 +2973,44 @@ with st.sidebar:
         ):
             st.session_state.page = "Settings"
             st.rerun()
+
+    # ---- per-account preferences: theme + personality ----
+    with st.expander("Preferences"):
+        _cur_theme = get_user_pref(user["id"], "theme", "dark")
+        _theme_choice = st.segmented_control(
+            "Theme",
+            ["Dark", "Light"],
+            default="Light" if _cur_theme == "light" else "Dark",
+            key="pref_theme",
+        )
+        if _theme_choice and _theme_choice.lower() != _cur_theme:
+            set_user_pref(user["id"], "theme", _theme_choice.lower())
+            st.rerun()
+
+        _cur_pers = get_user_pref(user["id"], "personality", "default")
+        _pers_keys = list(PERSONALITIES.keys())
+        _pers_labels = [PERSONALITIES[k]["label"] for k in _pers_keys]
+        _pers_idx = _pers_keys.index(_cur_pers) if _cur_pers in _pers_keys else 0
+        _pers_label = st.selectbox(
+            "Personality", _pers_labels, index=_pers_idx, key="pref_personality"
+        )
+        _new_pers = _pers_keys[_pers_labels.index(_pers_label)]
+        if _new_pers != _cur_pers:
+            set_user_pref(user["id"], "personality", _new_pers)
+            st.rerun()
+
+        if _new_pers == "custom":
+            _cur_custom = get_user_pref(user["id"], "personality_custom", "")
+            _new_custom = st.text_area(
+                "Custom persona",
+                value=_cur_custom,
+                placeholder="e.g. Talk like a calm zen master who speaks in metaphors.",
+                height=110,
+                key="pref_custom",
+            )
+            if st.button("Save persona", key="pref_custom_save", use_container_width=True):
+                set_user_pref(user["id"], "personality_custom", _new_custom or "")
+                st.rerun()
 
     _is_guest = safe_get(user, "plan") == "Guest"
     if _is_guest:
@@ -2958,6 +3334,16 @@ with composer:
 if user_msg:
     user = get_user_by_id(st.session_state.user_id)
 
+    # fun easter eggs — instant, no model call, no charge
+    egg = handle_fun(user_msg)
+    if egg is not None:
+        add_message(st.session_state.chat_id, "user", user_msg)
+        if egg["reply"]:
+            add_message(st.session_state.chat_id, "assistant", egg["reply"])
+        if egg["visual"]:
+            st.session_state["_fx"] = egg["visual"]
+        st.rerun()
+
     # owner dev commands — instant, no model use, no model call
     cmd_reply = handle_owner_command(user_msg, user)
     if cmd_reply is not None:
@@ -3025,7 +3411,9 @@ if pending and pending["chat_id"] == st.session_state.chat_id:
         for note in notes:
             knowledge_block += "- " + note["topic"] + ": " + note["summary"] + NL
 
-    system_text = build_system_prompt("Medium") + knowledge_block
+    _pers = get_user_pref(user["id"], "personality", "default")
+    _pers_custom = get_user_pref(user["id"], "personality_custom", "")
+    system_text = build_system_prompt("Medium", _pers, _pers_custom) + knowledge_block
     turns = [(m["role"], m["content"]) for m in recent_messages]
 
     # _stream_from_nonstream flips this to False if a provider falls back on error.
