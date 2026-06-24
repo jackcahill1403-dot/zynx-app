@@ -2208,7 +2208,8 @@ OWNER_COMMANDS_HELP = (
     "- `/instructions <text>` — set custom AI instructions (empty to clear)\n"
     "- `/knowledge clear` — wipe shared learning notes\n"
     "- `/stats` — app stats\n"
-    "- `/users` — list all accounts (email, username, plan, join date)"
+    "- `/users` — list all accounts (email, username, plan, join date)\n"
+    "- `/dbstatus` — DB mode + live read/write latency (Turso diagnostics)"
 )
 
 
@@ -2291,6 +2292,33 @@ def handle_owner_command(text, user):
         conn.close()
         return (f"**Zynx stats**\n\n- Users: {users}\n- Chats: {chats}\n"
                 f"- Messages: {msgs}\n- Learning notes: {notes}\n- Model: `{get_setting('model')}`")
+
+    if cmd in ("/dbstatus", "/db"):
+        from zynx_db import db_status
+        s = db_status()
+        conn = connect()
+        cur = conn.cursor()
+        t0 = time.perf_counter()
+        cur.execute("SELECT 1").fetchone()
+        read_ms = (time.perf_counter() - t0) * 1000
+        t1 = time.perf_counter()
+        cur.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('_ping', ?)",
+            (now(),)
+        )
+        conn.commit()
+        write_ms = (time.perf_counter() - t1) * 1000
+        conn.close()
+        return (
+            "**DB status**\n\n"
+            f"- Mode: `{s['mode']}`\n"
+            f"- libsql: `{s['libsql_version']}`\n"
+            f"- Initial connect: `{s['connect_ms']}` ms\n"
+            f"- Initial sync: `{s['initial_sync_ms']}` ms\n"
+            f"- Replica fallback error: `{s['replica_error']}`\n"
+            f"- Live `SELECT 1`: **{read_ms:.1f}** ms\n"
+            f"- Live write+commit: **{write_ms:.1f}** ms"
+        )
 
     if cmd == "/users":
         conn = connect()

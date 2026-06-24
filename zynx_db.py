@@ -7,6 +7,8 @@ app code keeps using row["col"] even though libSQL returns bare tuples.
 """
 
 import os
+import sys
+import time
 import sqlite3
 import tempfile
 
@@ -17,6 +19,25 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 # to the remote Turso primary). Reads then hit the local copy; writes are pushed
 # to the primary after each commit so they survive a server restart.
 _IS_REPLICA = False
+
+# Diagnostics (Phase-1 evidence). Filled in by _make_raw(); read via db_status().
+_DIAG = {
+    "mode": "uninitialized",   # "replica" | "remote-direct" | "local-sqlite"
+    "libsql_version": None,
+    "replica_error": None,     # why the embedded replica fell back, if it did
+    "connect_ms": None,        # time to open the connection
+    "initial_sync_ms": None,   # time for the first replica sync()
+}
+
+
+def _log(msg):
+    """Print to stderr so it shows in Streamlit Cloud's 'Manage app' logs."""
+    print(f"[zynx-db] {msg}", file=sys.stderr, flush=True)
+
+
+def db_status():
+    """Snapshot of how the DB connection resolved. Safe to render in-app."""
+    return dict(_DIAG)
 
 # Local DB path: env override (tests) else the app's existing file location.
 APP_DB = os.getenv("ZYNX_DB_PATH") or os.path.join(
@@ -138,6 +159,7 @@ def _make_raw():
     global _IS_REPLICA
     if using_turso():
         import libsql  # lazy: only needed on the cloud
+        _DIAG["libsql_version"] = getattr(libsql, "__version__", "?")
 
         # Preferred: an embedded replica. A local SQLite file is kept in sync
         # with the remote Turso primary, so every read is served locally (~1ms)
@@ -147,20 +169,34 @@ def _make_raw():
             local_path = os.getenv("ZYNX_REPLICA_PATH") or os.path.join(
                 tempfile.gettempdir(), "zynx_replica.db"
             )
+            t0 = time.perf_counter()
             conn = libsql.connect(
                 local_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN
             )
+            t1 = time.perf_counter()
             conn.sync()  # pull current remote state into the fresh local replica
+            t2 = time.perf_counter()
+            _DIAG["connect_ms"] = round((t1 - t0) * 1000, 1)
+            _DIAG["initial_sync_ms"] = round((t2 - t1) * 1000, 1)
+            _DIAG["mode"] = "replica"
             _IS_REPLICA = True
+            _log(f"embedded replica OK · libsql={_DIAG['libsql_version']} · "
+                 f"connect={_DIAG['connect_ms']}ms · sync={_DIAG['initial_sync_ms']}ms")
             return conn
-        except Exception:
+        except Exception as e:
             # Replica unsupported/unavailable — fall back to a direct remote
             # connection (the previous behaviour) so the app still works.
+            # Capture WHY: a silent fallback here means every read becomes a
+            # transatlantic round-trip, which is the slowness we're chasing.
             _IS_REPLICA = False
+            _DIAG["replica_error"] = repr(e)
+            _DIAG["mode"] = "remote-direct"
+            _log(f"embedded replica FELL BACK to remote-direct · reason: {e!r}")
             try:
                 return libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-            except Exception as e:
-                raise RuntimeError(f"Zynx database unavailable (Turso): {e}") from e
+            except Exception as e2:
+                raise RuntimeError(f"Zynx database unavailable (Turso): {e2}") from e2
+    _DIAG["mode"] = "local-sqlite"
     return sqlite3.connect(APP_DB, check_same_thread=False)
 
 
