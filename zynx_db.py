@@ -134,14 +134,14 @@ class _Conn:
         return cur.execute(sql, params)
 
     def commit(self):
+        # On a Turso embedded replica, writes are forwarded to the remote
+        # primary at write time (durable) and applied to the local file (so
+        # reads see them immediately). We intentionally do NOT call sync() here:
+        # sync() pulls the whole remote state and was costing ~2.5s PER commit
+        # (measured via /dbstatus), making every message painfully slow. The
+        # local replica is kept fresh in the background via sync_interval (set
+        # in _make_raw), so cross-instance reads still converge.
         self._raw.commit()
-        # Push local writes to the remote primary so they persist across server
-        # restarts (the local replica file is ephemeral on the cloud host).
-        if _IS_REPLICA:
-            try:
-                self._raw.sync()
-            except Exception:
-                pass
 
     def close(self):
         pass  # no-op: shared singleton, do not tear down
@@ -170,11 +170,19 @@ def _make_raw():
                 tempfile.gettempdir(), "zynx_replica.db"
             )
             t0 = time.perf_counter()
-            conn = libsql.connect(
-                local_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN
-            )
+            # sync_interval = background pull cadence (seconds), so we never
+            # block a commit on a sync. Older libsql lacks the kwarg → retry.
+            try:
+                conn = libsql.connect(
+                    local_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN,
+                    sync_interval=60,
+                )
+            except TypeError:
+                conn = libsql.connect(
+                    local_path, sync_url=TURSO_URL, auth_token=TURSO_TOKEN,
+                )
             t1 = time.perf_counter()
-            conn.sync()  # pull current remote state into the fresh local replica
+            conn.sync()  # one initial pull of current remote state into the replica
             t2 = time.perf_counter()
             _DIAG["connect_ms"] = round((t1 - t0) * 1000, 1)
             _DIAG["initial_sync_ms"] = round((t2 - t1) * 1000, 1)
