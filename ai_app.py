@@ -427,14 +427,18 @@ def ui(theme="dark"):
     [data-testid="stDeployButton"],
     [data-testid="stStatusWidget"],
     [data-testid="stDecoration"],
-    /* Streamlit Community Cloud "made by <github user>" creator/viewer badge
-       (bottom corner). Class names are hashed, so match by prefix + testid. */
-    [data-testid="stAppViewerBadge"],
+    /* Streamlit Community Cloud "Created by <github user>" badge (bottom corner).
+       Wrapper class is hashed per build, so anchor on the stable avatar testid
+       (data-testid="appCreatorAvatar") and remove its wrapper via :has(). The
+       direct-child chains stay inside the badge subtree, so the app is safe. */
+    [data-testid="appCreatorAvatar"],
+    [class*="_profileImage_"],
+    :has(> [data-testid="appCreatorAvatar"]),
+    :has(> div > [data-testid="appCreatorAvatar"]),
+    :has(> a > [data-testid="appCreatorAvatar"]),
+    :has(> a > div > [data-testid="appCreatorAvatar"]),
     a[href*="streamlit.io/cloud"],
-    a[href*="share.streamlit.io"],
-    [class*="viewerBadge"],
-    [class*="profileContainer"],
-    [class*="_profileContainer"] { display: none !important; }
+    a[href*="share.streamlit.io"] { display: none !important; }
 
     /* header must stay so the collapsed-sidebar expand button exists; blend it.
        stHeader is position:fixed + transparent, so it adds no visible gap. */
