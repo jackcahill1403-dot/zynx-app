@@ -2513,38 +2513,37 @@ def build_image_url(prompt, *, width=1024, height=1024):
 
 
 # =========================================================
-# IMAGE PROMPT MODERATION
-# Policy (set by owner): nudity is allowed; explicit porn / sex acts are not;
-# realistic weapons + destructive content are not (stylized/game weapons are
-# fine); anything sexual involving minors is always blocked.
-# Keyword-based — imperfect by nature, fail-open so /image never breaks.
+# IMAGE PROMPT MODERATION  (strict SFW)
+# Owner policy (2026-06-27): block ALL NSFW (nudity / sexual / suggestive),
+# plus weapons & destructive content, gore, self-harm, drugs, and hate.
+# Realistic weapons are blocked; stylized / game-art weapons stay allowed so
+# game-dev prompts keep working. Keyword-based — imperfect by nature, and
+# fail-open so /image never breaks on a moderation error.
 # =========================================================
 
-# Explicit sexual activity / pornography (nudity words are deliberately NOT here).
-_IMG_SEX_EXPLICIT = re.compile(
-    r"\b(porn\w*|xxx|hentai|rule\s?34|sexually\s+explicit|sex\s+act|having\s+sex|"
-    r"intercourse|blow\s?job|hand\s?job|oral\s+sex|deep\s?throat|penetrat\w*|"
-    r"masturbat\w*|creampie|cum\s?shot|cumming|ejaculat\w*|orgasm\w*|gang\s?bang|"
-    r"bukkake|fellatio|cunnilingus|dildo|sex\s?toy|bdsm|orgy|"
-    r"spread\s+(?:her|his|their)?\s*legs|cum\s+on|facial\s+cumshot|squirting)\b",
+# All NSFW: pornography, sexual activity, nudity, and suggestive/sexualized terms.
+_IMG_NSFW = re.compile(
+    r"\b(porn\w*|xxx|hentai|rule\s?34|nsfw|sexually?\s+explicit|sex(?:ual|y)?|"
+    r"having\s+sex|intercourse|blow\s?job|hand\s?job|oral\s+sex|deep\s?throat|"
+    r"penetrat\w*|masturbat\w*|creampie|cum(?:shot|ming|s)?|ejaculat\w*|orgasm\w*|"
+    r"gang\s?bang|bukkake|fellatio|cunnilingus|dildo|sex\s?toy|bdsm|orgy|fetish|kink|"
+    r"erotic\w*|seductive|seductress|provocative|sensual|onlyfans|"
+    r"nude|nudes|nudity|naked|topless|bottomless|undressed|stripping|stripper|"
+    r"breasts?|boobs?|nipples?|areola|cleavage|buttocks|booty|"
+    r"lingerie|underwear|panties|thong|g-?string|bikini|swimsuit|"
+    r"fishnet|see-?through|wet\s+t-?shirt|upskirt|cameltoe|twerk\w*|"
+    r"no\s+clothes|fully\s+nude|bare\s+(?:chest|breast|butt|skin))\b",
     re.IGNORECASE,
 )
 
-# Nudity / anatomy that is ALLOWED on its own (used only for the minors guard).
-_IMG_NUDITY = re.compile(
-    r"\b(nude|nudes|nudity|naked|topless|bottomless|undressed|"
-    r"breasts?|boobs?|nipples?|areola|lingerie|underwear|panties|bikini|"
-    r"no\s+clothes|fully\s+nude|bare\s+(?:chest|breast|skin))\b",
-    re.IGNORECASE,
-)
-
-# Indicators that a person referenced may be a minor.
-_IMG_MINOR = re.compile(
-    r"\b(child|children|childlike|kid|kids|toddler|infant|babies|baby|minor|"
-    r"underage|under\s?age|pre\s?teen|teen|teens|teenage|teenager|adolescent|"
-    r"thirteen|fourteen|fifteen|sixteen|seventeen|loli|lolita|shota|"
-    r"school\s?girl|school\s?boy|juvenile|young\s+(?:girl|boy)|little\s+(?:girl|boy)|"
-    r"(?:[0-9]|1[0-7])\s*[- ]?\s*(?:year|yr)s?[- ]?old)\b",
+# Gore, self-harm, hard drugs, and hate symbols.
+_IMG_HARM = re.compile(
+    r"\b(gore|gory|gruesome|dismember\w*|decapitat\w*|behead(?:ing)?|mutilat\w*|"
+    r"disembowel\w*|eviscerat\w*|bloody\s+(?:corpse|body)|severed\s+(?:head|limb)|"
+    r"self-?harm|self\s+harm|suicide|suicidal|slit\s+(?:wrist|throat)|"
+    r"cutting\s+(?:myself|herself|himself)|hang(?:ing)?\s+(?:myself|herself|himself)|"
+    r"cocaine|heroin|meth(?:amphetamine)?|fentanyl|"
+    r"swastika|nazis?|\bkkk\b|isis|terroris\w*)\b",
     re.IGNORECASE,
 )
 
@@ -2584,16 +2583,12 @@ def image_prompt_blocked(prompt):
     """
     try:
         p = prompt or ""
-        is_minor = bool(_IMG_MINOR.search(p))
-        is_sexual = bool(_IMG_SEX_EXPLICIT.search(p))
-        is_nudity = bool(_IMG_NUDITY.search(p))
 
-        # Minors + anything sexual or nude — always blocked, no detail given.
-        if is_minor and (is_sexual or is_nudity):
-            return "that prompt isn't allowed."
+        if _IMG_NSFW.search(p):
+            return "NSFW / sexual content isn't allowed."
 
-        if is_sexual:
-            return "explicit sexual content isn't allowed (non-explicit nudity is fine)."
+        if _IMG_HARM.search(p):
+            return "graphic, self-harm, drug, or hateful content isn't allowed."
 
         if _IMG_DESTRUCTIVE.search(p):
             return "weapons / destructive content isn't allowed."
