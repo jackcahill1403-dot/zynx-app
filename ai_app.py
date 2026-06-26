@@ -10,6 +10,7 @@ def safe_get(row, key, default=None):
         return default
 
 import os
+import sys
 import urllib.parse
 import re
 import json
@@ -26,7 +27,7 @@ import streamlit as st
 from google import genai
 
 # Persistent storage layer: Turso/libSQL on the cloud, local SQLite for dev.
-from zynx_db import connect, APP_DB
+from zynx_db import connect, connect_isolated, APP_DB
 
 # =========================================================
 # ZYNX CONFIG
@@ -2243,7 +2244,7 @@ def infer_topic(text):
     return "general"
 
 
-def save_knowledge(topic, summary):
+def save_knowledge(topic, summary, conn=None):
     if not topic or not summary:
         return
 
@@ -2253,7 +2254,9 @@ def save_knowledge(topic, summary):
     topic = topic[:80]
     summary = summary[:500]
 
-    conn = connect()
+    owns_conn = conn is None
+    if conn is None:
+        conn = connect()
     cur = conn.cursor()
 
     cur.execute(
@@ -2282,13 +2285,17 @@ def save_knowledge(topic, summary):
         )
 
     conn.commit()
-    conn.close()
+    if owns_conn:
+        conn.close()
 
 
-def learn_from_exchange(user_msg):
-    if get_setting("learning_enabled") != "true":
-        return
+def _learn_apply(user_msg, conn=None):
+    """Pure work of learning from one user message: filter, infer topic, save.
 
+    No st.* / get_setting here, so it is safe to run on the background worker
+    thread (which has no Streamlit ScriptRunContext). The learning_enabled
+    gate is checked by the caller on the main thread.
+    """
     if looks_personal(user_msg):
         return
 
@@ -2303,7 +2310,76 @@ def learn_from_exchange(user_msg):
         return
 
     topic = infer_topic(clean)
-    save_knowledge(topic, f"Users have discussed: {clean[:240]}")
+    save_knowledge(topic, f"Users have discussed: {clean[:240]}", conn=conn)
+
+
+def learn_from_exchange(user_msg):
+    """Synchronous learn (kept for tests / back-compat). Live path uses
+    enqueue_learn() to move this off the user's hot path."""
+    if get_setting("learning_enabled") != "true":
+        return
+    _learn_apply(user_msg)
+
+
+# --- Background knowledge writer -------------------------------------------
+# learn_from_exchange() used to run inline after each reply — one DB commit on
+# the user's hot path, right before st.rerun(). We hand it to a single daemon
+# worker that owns its own DB connection (connect_isolated). ONE worker means
+# that connection is never used concurrently; the user's turn finishes (and
+# st.rerun() fires) without waiting on the learn write. Best-effort: a job lost
+# to process death only costs one knowledge update, never user data.
+_LEARN_Q = queue.Queue(maxsize=1000)
+_LEARN_WORKER_STARTED = False
+_LEARN_WORKER_LOCK = threading.Lock()
+
+
+def _learn_worker_loop():
+    global _LEARN_WORKER_STARTED
+    try:
+        conn = connect_isolated()
+    except Exception as e:
+        # Couldn't open the writer connection — log, mark not-started so a later
+        # turn retries, and exit. Learns are best-effort; never wedge the app.
+        print(f"[zynx] learn worker connect failed: {e!r}", file=sys.stderr, flush=True)
+        with _LEARN_WORKER_LOCK:
+            _LEARN_WORKER_STARTED = False
+        return
+    while True:
+        user_msg = _LEARN_Q.get()
+        try:
+            _learn_apply(user_msg, conn=conn)
+        except Exception as e:
+            print(f"[zynx] learn worker error: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            _LEARN_Q.task_done()
+
+
+def _ensure_learn_worker():
+    global _LEARN_WORKER_STARTED
+    if _LEARN_WORKER_STARTED:
+        return
+    with _LEARN_WORKER_LOCK:
+        if _LEARN_WORKER_STARTED:
+            return
+        threading.Thread(
+            target=_learn_worker_loop, name="zynx-learn", daemon=True
+        ).start()
+        _LEARN_WORKER_STARTED = True
+
+
+def enqueue_learn(user_msg):
+    """Async replacement for learn_from_exchange. Snapshot the setting on the
+    main thread (st.cache_data is unavailable off-thread), then hand the work
+    to the background writer. Never blocks the user's turn."""
+    if get_setting("learning_enabled") != "true":
+        return
+    _ensure_learn_worker()
+    try:
+        _LEARN_Q.put_nowait(user_msg)
+    except queue.Full:
+        # Backed up (slow DB / burst). Drop this learn write rather than block
+        # the reply — best-effort by design.
+        pass
 
 
 def search_knowledge(query, limit=5):
@@ -3530,7 +3606,7 @@ if pending and pending["chat_id"] == st.session_state.chat_id:
     # Persist once, then run side-effects.
     add_message(st.session_state.chat_id, "assistant", reply)
     if st.session_state.get("_last_stream_ok", True):
-        learn_from_exchange(p_user_msg)
+        enqueue_learn(p_user_msg)
     elif not no_charge:
         # Provider returned an error via the fallback path — refund the use.
         refund_model_use(user["id"], p_model_key)

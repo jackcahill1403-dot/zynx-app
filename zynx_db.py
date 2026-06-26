@@ -21,7 +21,7 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 _IS_REPLICA = False
 
 # Bump on each deploy so /dbstatus confirms which code the live app is running.
-DB_BUILD = "2026-06-24-batched-writes"
+DB_BUILD = "2026-06-26-bg-learn-writer"
 
 # Diagnostics (Phase-1 evidence). Filled in by _make_raw(); read via db_status().
 _DIAG = {
@@ -221,6 +221,27 @@ def connect():
     if _CONN is None:
         _CONN = _wrap(_make_raw())
     return _CONN
+
+
+def connect_isolated():
+    """A fresh, NON-singleton connection for a background writer thread.
+
+    connect() hands back a process-wide singleton; running its cursor from a
+    second thread while the main thread is also writing is unsafe (interleaved
+    cursors / libsql corruption). A background writer must own its own handle.
+
+    Cloud: a direct remote connection to the Turso primary — writes are durable
+    immediately, and the extra round-trip is fine because this runs OFF the
+    user's hot path. Local dev: a separate SQLite handle on the same file
+    (SQLite serialises writers via file locking).
+
+    The caller owns the returned connection for its lifetime (a daemon worker
+    never closes it).
+    """
+    if using_turso():
+        import libsql  # lazy: cloud only
+        return _wrap(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+    return _wrap(sqlite3.connect(APP_DB, check_same_thread=False))
 
 
 def reset_connection_for_tests():
