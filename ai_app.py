@@ -426,7 +426,15 @@ def ui(theme="dark"):
     [data-testid="stToolbarActions"],
     [data-testid="stDeployButton"],
     [data-testid="stStatusWidget"],
-    [data-testid="stDecoration"] { display: none !important; }
+    [data-testid="stDecoration"],
+    /* Streamlit Community Cloud "made by <github user>" creator/viewer badge
+       (bottom corner). Class names are hashed, so match by prefix + testid. */
+    [data-testid="stAppViewerBadge"],
+    a[href*="streamlit.io/cloud"],
+    a[href*="share.streamlit.io"],
+    [class*="viewerBadge"],
+    [class*="profileContainer"],
+    [class*="_profileContainer"] { display: none !important; }
 
     /* header must stay so the collapsed-sidebar expand button exists; blend it.
        stHeader is position:fixed + transparent, so it adds no visible gap. */
