@@ -29,6 +29,13 @@ from google import genai
 # Persistent storage layer: Turso/libSQL on the cloud, local SQLite for dev.
 from zynx_db import connect, connect_isolated, APP_DB
 
+# Windows desktop build, served from GitHub Releases (the ~80MB exe is too big
+# to live in the repo). "latest/download" always points at the newest release
+# asset named Zynx.exe, so the link never needs version bumps.
+DESKTOP_DOWNLOAD_URL = (
+    "https://github.com/jackcahill1403-dot/zynx-app/releases/latest/download/Zynx-windows.zip"
+)
+
 # =========================================================
 # ZYNX CONFIG
 # =========================================================
@@ -3190,6 +3197,12 @@ with st.sidebar:
         st.session_state.chat_id = None
         st.session_state.page = "Chat"
         st.rerun()
+
+    st.link_button(
+        "⬇  Download for Windows (.zip)",
+        DESKTOP_DOWNLOAD_URL,
+        use_container_width=True,
+    )
 
 
 # =========================================================
