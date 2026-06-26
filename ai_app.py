@@ -2512,6 +2512,101 @@ def build_image_url(prompt, *, width=1024, height=1024):
     )
 
 
+# =========================================================
+# IMAGE PROMPT MODERATION
+# Policy (set by owner): nudity is allowed; explicit porn / sex acts are not;
+# realistic weapons + destructive content are not (stylized/game weapons are
+# fine); anything sexual involving minors is always blocked.
+# Keyword-based — imperfect by nature, fail-open so /image never breaks.
+# =========================================================
+
+# Explicit sexual activity / pornography (nudity words are deliberately NOT here).
+_IMG_SEX_EXPLICIT = re.compile(
+    r"\b(porn\w*|xxx|hentai|rule\s?34|sexually\s+explicit|sex\s+act|having\s+sex|"
+    r"intercourse|blow\s?job|hand\s?job|oral\s+sex|deep\s?throat|penetrat\w*|"
+    r"masturbat\w*|creampie|cum\s?shot|cumming|ejaculat\w*|orgasm\w*|gang\s?bang|"
+    r"bukkake|fellatio|cunnilingus|dildo|sex\s?toy|bdsm|orgy|"
+    r"spread\s+(?:her|his|their)?\s*legs|cum\s+on|facial\s+cumshot|squirting)\b",
+    re.IGNORECASE,
+)
+
+# Nudity / anatomy that is ALLOWED on its own (used only for the minors guard).
+_IMG_NUDITY = re.compile(
+    r"\b(nude|nudes|nudity|naked|topless|bottomless|undressed|"
+    r"breasts?|boobs?|nipples?|areola|lingerie|underwear|panties|bikini|"
+    r"no\s+clothes|fully\s+nude|bare\s+(?:chest|breast|skin))\b",
+    re.IGNORECASE,
+)
+
+# Indicators that a person referenced may be a minor.
+_IMG_MINOR = re.compile(
+    r"\b(child|children|childlike|kid|kids|toddler|infant|babies|baby|minor|"
+    r"underage|under\s?age|pre\s?teen|teen|teens|teenage|teenager|adolescent|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|loli|lolita|shota|"
+    r"school\s?girl|school\s?boy|juvenile|young\s+(?:girl|boy)|little\s+(?:girl|boy)|"
+    r"(?:[0-9]|1[0-7])\s*[- ]?\s*(?:year|yr)s?[- ]?old)\b",
+    re.IGNORECASE,
+)
+
+# Genuinely dangerous / real-world-harm content — ALWAYS blocked, no exception.
+_IMG_DESTRUCTIVE = re.compile(
+    r"\b(i\.?e\.?d\.?|pipe\s?bomb|suicide\s+vest|car\s?bomb|dirty\s+bomb|"
+    r"nuke|nuclear\s+(?:bomb|weapon|warhead)|anthrax|sarin|ricin|"
+    r"chemical\s+weapon|biological\s+weapon|mass\s+shooting|school\s+shooting|"
+    r"how\s+to\s+(?:make|build)\s+(?:a\s+)?(?:bomb|weapon|gun|explosive))\b",
+    re.IGNORECASE,
+)
+
+# Conventional weapons (firearms, bombs, grenades) — blocked UNLESS a
+# stylization cue marks it as game-art / cartoon / sci-fi.
+_IMG_FIREARM = re.compile(
+    r"\b(guns?|handguns?|shotguns?|rifles?|pistols?|firearms?|revolvers?|"
+    r"ak-?47|ak47|m-?16|ar-?15|glock|uzi|smg|sub\s?machine\s?gun|"
+    r"assault\s+rifle|sniper\s+rifle|machine\s+gun|sawed-?off|"
+    r"bombs?|grenades?|explosives?|dynamite|c-?4|tnt|molotov)\b",
+    re.IGNORECASE,
+)
+
+# Cues that a weapon prompt is stylized / game-art (so a firearm is allowed).
+_IMG_STYLIZED = re.compile(
+    r"\b(roblox|minecraft|lego|toy|nerf|water\s?gun|squirt\s?gun|bubble\s?gun|"
+    r"cartoon\w*|stylized|blocky|low\s?-?poly|voxel|pixel(?:\s?art|ated)?|"
+    r"cel-?shaded|anime|sci-?fi|science\s+fiction|futuristic|laser|blaster|ray\s?gun|"
+    r"plastic|foam|cute|chibi|emoji|clip\s?art|game\s+asset)\b",
+    re.IGNORECASE,
+)
+
+
+def image_prompt_blocked(prompt):
+    """Return a short refusal reason if `prompt` is disallowed, else None.
+
+    Fail-open: any unexpected error returns None so /image keeps working.
+    """
+    try:
+        p = prompt or ""
+        is_minor = bool(_IMG_MINOR.search(p))
+        is_sexual = bool(_IMG_SEX_EXPLICIT.search(p))
+        is_nudity = bool(_IMG_NUDITY.search(p))
+
+        # Minors + anything sexual or nude — always blocked, no detail given.
+        if is_minor and (is_sexual or is_nudity):
+            return "that prompt isn't allowed."
+
+        if is_sexual:
+            return "explicit sexual content isn't allowed (non-explicit nudity is fine)."
+
+        if _IMG_DESTRUCTIVE.search(p):
+            return "weapons / destructive content isn't allowed."
+
+        if _IMG_FIREARM.search(p) and not _IMG_STYLIZED.search(p):
+            return ("realistic weapons aren't allowed — stylized or game-style "
+                    "weapons (e.g. `cartoon laser blaster`, `roblox-style`) are fine.")
+
+        return None
+    except Exception:
+        return None  # never let moderation break image generation
+
+
 def handle_image(text):
     """Return {'reply': <markdown image or usage hint>} for an /image (or
     /img) command, else None. Preserves the prompt's case (unlike handle_fun).
@@ -2526,6 +2621,9 @@ def handle_image(text):
     prompt = parts[1].strip() if len(parts) > 1 else ""
     if not prompt:
         return {"reply": "Usage: `/image <prompt>` — e.g. `/image neon city at night`"}
+    blocked = image_prompt_blocked(prompt)
+    if blocked:
+        return {"reply": f"🚫 Can't generate that image — {blocked}"}
     alt = prompt.replace("]", "").replace("\n", " ").replace("\r", " ")
     url = build_image_url(prompt)
     return {"reply": f"![{alt}]({url})"}
