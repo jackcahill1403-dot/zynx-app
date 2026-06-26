@@ -10,6 +10,7 @@ def safe_get(row, key, default=None):
         return default
 
 import os
+import urllib.parse
 import re
 import json
 import html
@@ -2396,6 +2397,45 @@ PHRASE_EGGS = {
 }
 
 
+# Matches a chat message that is ONLY a markdown image — the shape /image
+# produces. The render loop upgrades these to st.image. Trailing ')' is left
+# for the \) anchor; \S+ backtracks one char to satisfy it.
+IMG_RE = re.compile(r'^!\[(?P<alt>[^\]]*)\]\((?P<url>https?://\S+)\)$')
+
+
+def build_image_url(prompt, *, width=1024, height=1024):
+    """Build a free Pollinations.ai image URL for `prompt`.
+
+    No API key. The browser fetches the image. A fresh random seed each
+    call gives variety when the same prompt is re-run.
+    """
+    seed = random.randint(1, 1_000_000)
+    q = urllib.parse.quote(prompt, safe="")
+    return (
+        f"https://image.pollinations.ai/prompt/{q}"
+        f"?width={width}&height={height}&seed={seed}&nologo=true"
+    )
+
+
+def handle_image(text):
+    """Return {'reply': <markdown image or usage hint>} for an /image (or
+    /img) command, else None. Preserves the prompt's case (unlike handle_fun).
+    Instant — no model call, no usage charge.
+    """
+    t = (text or "").strip()
+    low = t.lower()
+    if not (low in ("/image", "/img") or low.startswith("/image ")
+            or low.startswith("/img ")):
+        return None
+    parts = t.split(None, 1)
+    prompt = parts[1].strip() if len(parts) > 1 else ""
+    if not prompt:
+        return {"reply": "Usage: `/image <prompt>` — e.g. `/image neon city at night`"}
+    alt = prompt.replace("]", "").replace("\n", " ").replace("\r", " ")
+    url = build_image_url(prompt)
+    return {"reply": f"![{alt}]({url})"}
+
+
 def handle_fun(text):
     """Return {'reply': str|None, 'visual': str|None} for a fun trigger, else None."""
     t = (text or "").strip().lower()
@@ -3324,9 +3364,14 @@ if not messages:
     )
 
 # Render chat history — plain messages, no per-message controls.
+# A message that is only a markdown image (from /image) renders via st.image.
 for msg in messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        _img = IMG_RE.match(msg["content"].strip())
+        if _img:
+            st.image(_img.group("url"), caption=(_img.group("alt") or None))
+        else:
+            st.markdown(msg["content"])
 
 # slot for the in-progress assistant turn (renders above the sticky composer)
 thinking_slot = st.container()
@@ -3379,6 +3424,13 @@ if user_msg:
             add_message(st.session_state.chat_id, "assistant", egg["reply"])
         if egg["visual"]:
             st.session_state["_fx"] = egg["visual"]
+        st.rerun()
+
+    # /image — instant, no model call, no charge
+    img = handle_image(user_msg)
+    if img is not None:
+        add_message(st.session_state.chat_id, "user", user_msg)
+        add_message(st.session_state.chat_id, "assistant", img["reply"])
         st.rerun()
 
     # owner dev commands — instant, no model use, no model call
