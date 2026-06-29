@@ -205,7 +205,11 @@ INDEX_HTML = r"""
       --ring: rgba(255,255,255,0.18);
     }
     /* the one signal colour, identical in both themes */
-    :root { --blue: #2563eb; --blue-hover: #3b82f6; }
+    :root {
+      --blue: #2563eb; --blue-hover: #3b82f6;
+      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+      --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    }
 
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -225,6 +229,15 @@ INDEX_HTML = r"""
       text-transform: uppercase; letter-spacing: .18em; font-size: .64rem;
       color: var(--muted); font-weight: 500;
     }
+    ::selection { background: var(--accent); color: var(--bg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+    /* thin, neutral scrollbars */
+    .canvas, .convo-list, .composer textarea { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .canvas::-webkit-scrollbar, .convo-list::-webkit-scrollbar, .composer textarea::-webkit-scrollbar { width: 11px; height: 11px; }
+    .canvas::-webkit-scrollbar-thumb, .convo-list::-webkit-scrollbar-thumb, .composer textarea::-webkit-scrollbar-thumb {
+      background: var(--border); border-radius: 8px; border: 3px solid transparent; background-clip: content-box;
+    }
+    .canvas::-webkit-scrollbar-thumb:hover, .convo-list::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
 
     /* ============ SHELL ============ */
     .shell { height: 100vh; display: grid; grid-template-columns: 300px minmax(0,1fr); }
@@ -331,9 +344,11 @@ INDEX_HTML = r"""
     .msg.assistant.streaming { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow-soft); }
 
     code.inline { font-family: "JetBrains Mono", monospace; font-size: .85em; background: var(--accent-soft); padding: 1px 5px; border-radius: 5px; }
-    .codeblock { position: relative; margin: 8px 0; }
-    pre.code { margin: 0; background: var(--code-bg); color: var(--code-fg); border-radius: 9px; padding: 13px 14px; overflow-x: auto; font-family: "JetBrains Mono", monospace; font-size: .82rem; line-height: 1.6; }
-    .copy-code { position: absolute; top: 8px; right: 8px; border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.06); color: #d4d4d4; border-radius: 6px; padding: 3px 9px; cursor: pointer; font-family: "JetBrains Mono", monospace; font-size: .6rem; text-transform: uppercase; letter-spacing: .12em; }
+    .codeblock { margin: 10px 0; border-radius: 10px; overflow: hidden; background: var(--code-bg); box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+    .code-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 7px 13px; background: rgba(255,255,255,.045); border-bottom: 1px solid rgba(255,255,255,.07); }
+    .code-lang { font-family: "JetBrains Mono", monospace; font-size: .58rem; text-transform: uppercase; letter-spacing: .16em; color: #8d8d8d; }
+    pre.code { margin: 0; background: var(--code-bg); color: var(--code-fg); padding: 13px 14px; overflow-x: auto; font-family: "JetBrains Mono", monospace; font-size: .82rem; line-height: 1.6; }
+    .copy-code { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: #cfcfcf; border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: "JetBrains Mono", monospace; font-size: .58rem; text-transform: uppercase; letter-spacing: .12em; }
 
     .empty { position: relative; z-index: 1; height: 100%; display: grid; place-content: center; justify-items: center; text-align: center; gap: 18px; color: var(--muted); }
     .orb { width: 76px; height: 76px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 10px rgba(37,99,235,.10), 0 0 46px 6px rgba(37,99,235,.45); }
@@ -350,23 +365,32 @@ INDEX_HTML = r"""
       box-shadow: 0 6px 18px rgba(37,99,235,.40);
     }
     .send:disabled { opacity: .5; cursor: wait; }
+    .composer-hint { max-width: 880px; margin: 9px auto 0; text-align: center; opacity: .7; }
 
     /* ============ MOTION (felt, not seen) ============ */
     @media (prefers-reduced-motion: no-preference) {
-      .icon-btn, .theme-toggle, .model-card, .convo, .send, .composer { transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .2s ease, color .16s ease; }
+      .icon-btn, .theme-toggle, .model-card, .convo, .send, .composer, .copy-code, .send {
+        transition: transform .18s var(--ease-out), border-color .18s var(--ease-out), background .18s var(--ease-out), box-shadow .22s var(--ease-out), color .18s var(--ease-out);
+      }
       .canvas .spotlight { opacity: 1; }
-      .model-card:hover, .convo:hover, .theme-toggle:hover, .icon-btn:hover { transform: translateY(-2px); box-shadow: var(--shadow-soft); }
-      .send:hover { background: var(--blue-hover); transform: scale(1.05); box-shadow: 0 10px 26px rgba(37,99,235,.55); }
-      .send:active { transform: scale(.95); }
-      .composer:focus-within { transform: translateY(-2px); box-shadow: 0 0 0 1px var(--ring), var(--shadow-deep); animation: glowpulse 2.6s ease-in-out infinite; }
+      .send:active, .model-card:active, .convo:active, .icon-btn:active, .theme-toggle:active { transform: scale(.97); }
+      .composer:focus-within { transform: translateY(-2px); box-shadow: 0 0 0 1px var(--ring), var(--shadow-deep); animation: glowpulse 2.6s var(--ease-in-out) infinite; }
 
-      .msg.user { animation: slidein-r .34s cubic-bezier(.2,.7,.2,1) both; }
-      .msg.assistant { animation: slidein-l .34s cubic-bezier(.2,.7,.2,1) both; }
+      .msg.user { animation: slidein-r .4s var(--ease-out) both; }
+      .msg.assistant { animation: slidein-l .4s var(--ease-out) both; }
       .orb { animation: float 4.5s ease-in-out infinite, orbglow 3.2s ease-in-out infinite; }
-      .model-card, .convo { animation: slidein-l .3s ease both; }
-      .ripple { position: absolute; border-radius: 50%; transform: scale(0); background: rgba(0,0,0,.18); pointer-events: none; animation: ripple .5s ease-out; }
+      .model-card, .convo { animation: rise .34s var(--ease-out) backwards; }
+      .model-list .model-card:nth-child(2) { animation-delay: .05s; }
+      .model-list .model-card:nth-child(3) { animation-delay: .1s; }
+      .ripple { position: absolute; border-radius: 50%; transform: scale(0); background: rgba(0,0,0,.18); pointer-events: none; animation: ripple .5s var(--ease-out); }
       .send .ripple { background: rgba(255,255,255,.5); }
     }
+    @media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+      .model-card:hover, .convo:hover, .theme-toggle:hover, .icon-btn:hover { transform: translateY(-2px); box-shadow: var(--shadow-soft); }
+      .send:hover { background: var(--blue-hover); transform: scale(1.05); box-shadow: 0 10px 26px rgba(37,99,235,.55); }
+      .copy-code:hover { background: rgba(255,255,255,.12); color: #fff; }
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes slidein-r { from { opacity: 0; transform: translateX(22px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes slidein-l { from { opacity: 0; transform: translateX(-22px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
@@ -439,6 +463,7 @@ INDEX_HTML = r"""
           <textarea id="prompt" placeholder="Message Zynx..." rows="1" autocomplete="off"></textarea>
           <button class="send" id="send" type="submit">Send</button>
         </form>
+        <div class="composer-hint label">Enter to send &middot; Shift + Enter for newline</div>
       </div>
     </main>
   </div>
@@ -466,15 +491,23 @@ INDEX_HTML = r"""
   function renderMarkdown(src) {
     const blocks = [];
     let s = escapeHtml(src);
-    s = s.replace(/```([\s\S]*?)```/g, (m, code) => {
-      blocks.push(code.replace(/^\n/, '').replace(/\n$/, ''));
+    s = s.replace(/```([\s\S]*?)```/g, (m, raw) => {
+      let lang = '', code = raw;
+      const nl = raw.indexOf('\n');
+      const first = (nl === -1 ? raw : raw.slice(0, nl)).trim();
+      if (first && /^[a-zA-Z0-9+#.\-]{1,18}$/.test(first)) { lang = first; code = raw.slice(nl + 1); }
+      blocks.push({ lang: lang, code: code.replace(/^\n+/, '').replace(/\n+$/, '') });
       return '@@ZCB' + (blocks.length - 1) + '@@';
     });
     s = s.replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    s = s.replace(/@@ZCB(\d+)@@/g, (m, i) =>
-      '<div class="codeblock"><button class="copy-code" type="button">Copy</button><pre class="code"><code>' + blocks[+i] + '</code></pre></div>');
+    s = s.replace(/@@ZCB(\d+)@@/g, (m, i) => {
+      const b = blocks[+i];
+      return '<div class="codeblock"><div class="code-head"><span class="code-lang">' + (b.lang || 'code') +
+        '</span><button class="copy-code" type="button">Copy</button></div>' +
+        '<pre class="code"><code>' + b.code + '</code></pre></div>';
+    });
     return s;
   }
 
@@ -577,7 +610,7 @@ INDEX_HTML = r"""
   }
   function bindCopy(btn) {
     btn.addEventListener('click', () => {
-      const code = btn.parentElement.querySelector('code').innerText;
+      const code = btn.closest('.codeblock').querySelector('pre code').innerText;
       navigator.clipboard.writeText(code).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1400); });
     });
   }
