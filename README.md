@@ -1,11 +1,11 @@
-# Zynx.AI
+﻿# Zynx.AI
 
 A multi-model AI chat app built with Streamlit.
 
 Tiers:
-- **Vexa** - sharp all-rounder for everyday questions, explanations, planning, and fast instruction-following.
-- **Nyro** - deep-work model for coding, reasoning, debugging, and longer conversations.
-- **Kiro** - quick, lightweight model for chat, creative writing, brainstorming, and low-latency replies.
+- **Vexa** - free reasoning/all-rounder for everyday questions, explanations, planning, and fast instruction-following.
+- **Nyro** - free coding-focused model for coding, reasoning, debugging, and longer conversations.
+- **Kiro** - small free quick-chat model for chat, creative writing, brainstorming, and low-latency replies.
 
 ## Run locally
 ```bash
@@ -41,3 +41,4 @@ ZYNX_CLOUD = "1"            # hides the local-only Lite tier when hosted
 > persists in Turso/libSQL and survives restarts. Without them, the app uses a
 > local SQLite file (`zynx_v2.db`) for development. Host Python must be **<= 3.13**
 > (libSQL wheel availability).
+

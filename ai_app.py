@@ -84,27 +84,27 @@ MODELS = {
     "glm_air": {
         "label": "Vexa",
         "short": "Vexa",
-        "desc": "A sharp all-rounder for everyday questions, clear explanations, planning, and fast instruction-following.",
+        "desc": "A capable free reasoning model for everyday questions, explanations, planning, and heavier prompts.",
         "logo": "assets/model_logos/Vexa.png",
-        "model_id": "openrouter/z-ai/glm-4.5-air:free",
+        "model_id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "key_prefix": "OPENROUTER_GLM_AIR",
         "limits": {"Guest": 1, "Free": 3, "Plus": 5, "Ultra": 8},
     },
     "kimi_k2": {
         "label": "Nyro",
         "short": "Nyro",
-        "desc": "The deep-work model for coding, reasoning, debugging, and longer conversations that need more structure.",
+        "desc": "A free coding-focused model for debugging, implementation help, and structured technical work.",
         "logo": "assets/model_logos/Nyro.png",
-        "model_id": "openrouter/moonshotai/kimi-k2:free",
+        "model_id": "openrouter/cohere/north-mini-code:free",
         "key_prefix": "OPENROUTER_KIMI_K2",
         "limits": {"Guest": 2, "Free": 20, "Plus": 30, "Ultra": 50},
     },
     "mistral_nemo": {
         "label": "Kiro",
         "short": "Kiro",
-        "desc": "A quick, lightweight model for chat, creative writing, brainstorming, and low-latency replies.",
+        "desc": "A small free instruction model for quick chat, brainstorming, and lightweight creative writing.",
         "logo": "assets/model_logos/Kiro.png",
-        "model_id": "openrouter/mistralai/mistral-nemo:free",
+        "model_id": "openrouter/liquid/lfm-2.5-1.2b-instruct:free",
         "key_prefix": "OPENROUTER_MISTRAL_NEMO",
         "limits": {"Guest": 3, "Free": 35, "Plus": 50, "Ultra": 75},
     },
@@ -3847,4 +3847,5 @@ if pending and pending["chat_id"] == st.session_state.chat_id:
 elif pending:
     # pending belongs to a chat the user navigated away from â€” drop it.
     st.session_state.pending = None
+
 
