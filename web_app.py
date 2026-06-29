@@ -257,15 +257,15 @@ INDEX_HTML = r"""
       border: 1px solid var(--border); background: var(--card); color: var(--text);
       border-radius: 10px; padding: 10px; display: grid; grid-template-columns: 38px 1fr; gap: 10px;
     }
-    .model-card .mono-monogram {
-      width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center;
-      background: var(--accent-soft); color: var(--accent); font-weight: 600;
-      font-family: "JetBrains Mono", monospace; font-size: 1rem;
+    .model-card .model-logo {
+      width: 38px; height: 38px; border-radius: 8px; overflow: hidden; flex: none;
+      display: grid; place-items: center; background: #ffffff; border: 1px solid var(--border);
+      color: #1a1a1a; font-weight: 600; font-family: "JetBrains Mono", monospace; font-size: 1rem;
     }
+    .model-card .model-logo img { width: 100%; height: 100%; object-fit: contain; padding: 5px; display: block; }
     .model-card .m-name { display: block; font-weight: 600; line-height: 1.15; }
     .model-card .m-desc { display: block; margin-top: 3px; color: var(--muted); font-size: .76rem; line-height: 1.45; }
     .model-card.active { border-color: var(--accent); background: var(--accent-soft); }
-    .model-card.active .mono-monogram { background: var(--accent); color: var(--bg); }
 
     .convo-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .convo-list { overflow-y: auto; display: grid; gap: 6px; padding-right: 2px; align-content: start; }
@@ -510,8 +510,11 @@ INDEX_HTML = r"""
     els.models.innerHTML = Object.entries(state.models).map(([key, m]) => {
       const active = key === state.modelKey ? ' active' : '';
       const mg = (m.label || '?').slice(0, 1).toUpperCase();
+      const logo = m.logo
+        ? '<img src="' + escapeHtml(m.logo) + '" alt="' + escapeHtml(m.label) + '" loading="lazy" onerror="this.remove();this.parentNode.textContent=\'' + mg + '\'">'
+        : mg;
       return '<button class="model-card' + active + '" data-model="' + key + '">' +
-        '<span class="mono-monogram">' + mg + '</span>' +
+        '<span class="model-logo">' + logo + '</span>' +
         '<span><span class="m-name">' + escapeHtml(m.label) + '</span>' +
         '<span class="m-desc">' + escapeHtml(m.desc) + '</span></span></button>';
     }).join('');
