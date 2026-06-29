@@ -1,3 +1,48 @@
+# Zynx.AI
+
+A normal FastAPI web app for OpenRouter-powered chat. This rebuild does not use Streamlit.
+
+## Models
+- **Vexa** - balanced reasoning and everyday help.
+- **Nyro** - coding-focused debugging and implementation help.
+- **Kiro** - quick chat, brainstorming, and lightweight writing.
+
+## Run locally
+```bash
+pip install -r requirements.txt
+uvicorn web_app:app --reload
+```
+
+## Render
+Build command:
+```bash
+pip install -r requirements.txt
+```
+
+Start command:
+```bash
+uvicorn web_app:app --host 0.0.0.0 --port $PORT
+```
+
+## Environment keys
+Set these in Render Environment:
+
+```text
+OPENROUTER_GLM_AIR_API_KEY_1
+OPENROUTER_GLM_AIR_API_KEY_2
+OPENROUTER_GLM_AIR_API_KEY_3
+OPENROUTER_KIMI_K2_API_KEY_1
+OPENROUTER_KIMI_K2_API_KEY_2
+OPENROUTER_KIMI_K2_API_KEY_3
+OPENROUTER_MISTRAL_NEMO_API_KEY_1
+OPENROUTER_MISTRAL_NEMO_API_KEY_2
+OPENROUTER_MISTRAL_NEMO_API_KEY_3
+```
+
+Optional fallback:
+```text
+OPENROUTER_API_KEY
+```
 ﻿# Zynx.AI
 
 A multi-model AI chat app built with Streamlit.
