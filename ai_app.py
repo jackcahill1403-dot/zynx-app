@@ -81,31 +81,34 @@ EFFORT_PROMPTS = {
 # =========================================================
 
 MODELS = {
-    "supreme": {
-        "label": "⚡ Zynx Supreme ⚡",
-        "short": "⚡ Supreme",
-        "desc": "Our most powerful model — best for hard problems.",
-        "model_id": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+    "glm_air": {
+        "label": "GLM-4.5 Air",
+        "short": "GLM Air",
+        "desc": "Fast, strong instruction following, solid all-around work.",
+        "model_id": "openrouter/z-ai/glm-4.5-air:free",
+        "key_prefix": "OPENROUTER_GLM_AIR",
         "limits": {"Guest": 1, "Free": 3, "Plus": 5, "Ultra": 8},
     },
-    "everyday": {
-        "label": "☀️ Zynx Everyday ☀️",
-        "short": "☀️ Everyday",
-        "desc": "Fast, reliable all-rounder for daily use.",
-        "model_id": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free",
+    "kimi_k2": {
+        "label": "Kimi K2",
+        "short": "Kimi K2",
+        "desc": "Strong at coding, reasoning, and longer conversations.",
+        "model_id": "openrouter/moonshotai/kimi-k2:free",
+        "key_prefix": "OPENROUTER_KIMI_K2",
         "limits": {"Guest": 2, "Free": 20, "Plus": 30, "Ultra": 50},
     },
-    "lite": {
-        "label": "💡 Zynx Lite 💡",
-        "short": "💡 Lite",
-        "desc": "Light and quick for simple questions.",
-        "model_id": "openrouter/nvidia/nemotron-nano-9b-v2:free",
+    "mistral_nemo": {
+        "label": "Mistral Nemo",
+        "short": "Nemo",
+        "desc": "Quick responses for chat, creative writing, and lower latency.",
+        "model_id": "openrouter/mistralai/mistral-nemo:free",
+        "key_prefix": "OPENROUTER_MISTRAL_NEMO",
         "limits": {"Guest": 3, "Free": 35, "Plus": 50, "Ultra": 75},
     },
 }
 
-MODEL_ORDER = ["supreme", "everyday", "lite"]
-DEFAULT_MODEL_KEY = "everyday"
+MODEL_ORDER = ["glm_air", "kimi_k2", "mistral_nemo"]
+DEFAULT_MODEL_KEY = "glm_air"
 
 
 def get_model_limit(plan, model_key):
@@ -1228,14 +1231,49 @@ def _groq_generate_stream(system_text, turns, model, flags=None):
         yield from _stream_from_nonstream(_groq_generate, system_text, turns, model, flags=flags)
 
 
-def get_openrouter_key():
-    key = os.getenv("OPENROUTER_API_KEY")
-    if key:
-        return key
+def _secret_value(name):
+    val = os.getenv(name)
+    if val:
+        return val
     try:
-        return st.secrets["OPENROUTER_API_KEY"]
+        return st.secrets[name]
     except Exception:
         return None
+
+
+def _model_key_for_model_id(model):
+    for key, spec in MODELS.items():
+        model_id = spec["model_id"]
+        if model == model_id or (model_id.startswith("openrouter/") and model == _openrouter_slug(model_id)):
+            return key
+    return None
+
+
+def get_openrouter_keys(model_key=None):
+    keys = []
+    if model_key in MODELS:
+        prefix = MODELS[model_key].get("key_prefix")
+        if prefix:
+            for idx in range(1, 4):
+                key = _secret_value(f"{prefix}_API_KEY_{idx}")
+                if key:
+                    keys.append(key)
+    fallback = _secret_value("OPENROUTER_API_KEY")
+    if fallback:
+        keys.append(fallback)
+
+    deduped = []
+    seen = set()
+    for key in keys:
+        if key not in seen:
+            deduped.append(key)
+            seen.add(key)
+    return deduped
+
+
+def get_openrouter_key(model_key=None):
+    keys = get_openrouter_keys(model_key)
+    return keys[0] if keys else None
 
 
 def get_openrouter_model():
@@ -1291,21 +1329,21 @@ def _ratelimit_reset_hint(e):
     return f"{secs}s"
 
 
-def _openrouter_generate(system_text, turns, model=None):
-    """OpenRouter path: OpenAI-style chat using openrouter/free or another OpenRouter model."""
+def _openrouter_generate(system_text, turns, model=None, model_key=None):
+    """OpenRouter path with per-model key rotation for free model pools."""
     import json
     import urllib.request
     import urllib.error
 
-    key = get_openrouter_key()
-
-    if not key:
-        return False, (
-            "**No OpenRouter API key set.** Add `OPENROUTER_API_KEY` to `.streamlit/secrets.toml`, "
-            "then restart. Or run `/model gemini-2.5-flash-lite` to use Gemini."
-        )
-
     selected_model = model or get_openrouter_model() or "openrouter/free"
+    selected_model_key = model_key or _model_key_for_model_id(selected_model)
+    keys = get_openrouter_keys(selected_model_key)
+
+    if not keys:
+        return False, (
+            "**No OpenRouter API key set.** Add the selected model key secret "
+            "or fallback OPENROUTER_API_KEY, then restart."
+        )
 
     messages = [{"role": "system", "content": system_text}]
     for role, content in turns:
@@ -1321,63 +1359,76 @@ def _openrouter_generate(system_text, turns, model=None):
         "max_tokens": 4096
     }
 
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://zynx.ai",
-        "X-Title": "Zynx"
-    }
+    last_429 = None
+    last_auth_error = None
 
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST"
-    )
+    for key in keys:
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://zynx.ai",
+            "X-Title": "Zynx"
+        }
 
-    delay = 2.0
-    for attempt in range(3):  # the free pool is often busy — retry 429s
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
 
-            text = (
-                data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-            ).strip()
-            return True, text or "**OpenRouter returned an empty response.**"
+        delay = 2.0
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
 
-        except urllib.error.HTTPError as e:
-            err = e.read().decode("utf-8", errors="ignore")
-            low = err.lower()
+                text = (
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                ).strip()
+                return True, text or "**OpenRouter returned an empty response.**"
 
-            if e.code == 429:
-                ra = e.headers.get("Retry-After") if e.headers else None
-                try:
-                    wait = float(ra) if ra else delay
-                except Exception:
-                    wait = delay
-                if attempt < 2:
-                    time.sleep(min(wait, 8))
-                    delay *= 2
-                    continue
-                reset = _ratelimit_reset_hint(e)
-                return False, (
-                    "## 🚫 ZYNX IS CURRENTLY DOWN\n\n"
-                    f"Please try again in: **{reset}**\n\n"
-                    "_Our free models hit their usage limit. They reset automatically._"
-                )
-            if e.code in (401, 403):
-                return False, "**OpenRouter API key is invalid.** Check `OPENROUTER_API_KEY` in `secrets.toml`."
-            if "not found" in low or "no endpoints" in low:
-                return False, "**That OpenRouter model is unavailable.** Try `/model openrouter/free`."
+            except urllib.error.HTTPError as e:
+                err = e.read().decode("utf-8", errors="ignore")
+                low = err.lower()
 
-            return False, "**OpenRouter could not respond.**\n\n```\n" + err[:800] + "\n```"
+                if e.code == 429:
+                    last_429 = e
+                    ra = e.headers.get("Retry-After") if e.headers else None
+                    try:
+                        wait = float(ra) if ra else delay
+                    except Exception:
+                        wait = delay
+                    if attempt < 2:
+                        time.sleep(min(wait, 8))
+                        delay *= 2
+                        continue
+                    break
+                if e.code in (401, 403):
+                    last_auth_error = e
+                    break
+                if "not found" in low or "no endpoints" in low:
+                    return False, "**That OpenRouter model is unavailable.** Try another model."
 
-        except Exception as e:
-            return False, "**OpenRouter error.**\n\n```\n" + str(e)[:800] + "\n```"
+                return False, "**OpenRouter could not respond.**\n\n" + err[:800]
+
+            except Exception as e:
+                return False, "**OpenRouter error.**\n\n" + str(e)[:800]
+
+    if last_429 is not None:
+        reset = _ratelimit_reset_hint(last_429)
+        return False, (
+            "## ZYNX IS CURRENTLY DOWN\n\n"
+            f"Please try again in: **{reset}**\n\n"
+            "_All configured keys for this free model hit their usage limit. They reset automatically._"
+        )
+    if last_auth_error is not None:
+        return False, "**All configured OpenRouter keys for this model are invalid.** Check the model keys in secrets."
+
+    return False, "**OpenRouter could not respond.**"
 
 
-def _openrouter_generate_stream(system_text, turns, model=None, flags=None):
+def _openrouter_generate_stream(system_text, turns, model=None, model_key=None, flags=None):
     """OpenRouter streaming — intentionally falls back to the non-streaming sibling.
 
     The existing _openrouter_generate has valuable 429 retry/backoff logic that
@@ -1385,7 +1436,7 @@ def _openrouter_generate_stream(system_text, turns, model=None, flags=None):
     OpenRouter as a non-streaming provider (Everyday model) is the accepted,
     documented trade-off for this bundle.
     """
-    yield from _stream_from_nonstream(_openrouter_generate, system_text, turns, model, flags=flags)
+    yield from _stream_from_nonstream(_openrouter_generate, system_text, turns, model, model_key, flags=flags)
 
 
 def _ollama_generate(system_text, turns, model):
@@ -1502,7 +1553,9 @@ def generate_reply(system_text, turns, model):
     if model.startswith("groq/"):
         return _groq_generate(system_text, turns, model[len("groq/"):])
     if model.startswith("openrouter/"):
-        return _openrouter_generate(system_text, turns, _openrouter_slug(model))
+        return _openrouter_generate(
+            system_text, turns, _openrouter_slug(model), _model_key_for_model_id(model)
+        )
     if model.startswith("ollama/"):
         return _ollama_generate(system_text, turns, model[len("ollama/"):])
     return _gemini_generate(system_text, turns, model)
@@ -1619,7 +1672,9 @@ def generate_reply_stream(system_text, turns, model, flags=None):
     elif model.startswith("groq/"):
         yield from _groq_generate_stream(system_text, turns, model[len("groq/"):], flags=flags)
     elif model.startswith("openrouter/"):
-        yield from _openrouter_generate_stream(system_text, turns, _openrouter_slug(model), flags=flags)
+        yield from _openrouter_generate_stream(
+            system_text, turns, _openrouter_slug(model), _model_key_for_model_id(model), flags=flags
+        )
     elif model.startswith("ollama/"):
         yield from _ollama_generate_stream(system_text, turns, model[len("ollama/"):], flags=flags)
     else:
@@ -3125,7 +3180,7 @@ elif _fx == "spin":
 
 if not get_gemini_keys() and not get_anthropic_key() and not get_groq_key() and not get_openrouter_key():
     st.title("Zynx")
-    st.warning("No API key found. Add GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY to .streamlit/secrets.toml.")
+    st.warning("No API key found. Add GROQ_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or per-model OpenRouter keys to .streamlit/secrets.toml.")
     st.stop()
 
 ai_name = get_setting("ai_name")
