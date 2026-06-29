@@ -3,9 +3,9 @@
 A multi-model AI chat app built with Streamlit.
 
 Tiers:
-- **GLM-4.5 Air** - fast, strong instruction following, solid all-around work.
-- **Kimi K2** - strong at coding, reasoning, and longer conversations.
-- **Mistral Nemo** - quick chat and creative writing with lower latency.
+- **Vexa** - sharp all-rounder for everyday questions, explanations, planning, and fast instruction-following.
+- **Nyro** - deep-work model for coding, reasoning, debugging, and longer conversations.
+- **Kiro** - quick, lightweight model for chat, creative writing, brainstorming, and low-latency replies.
 
 ## Run locally
 ```bash

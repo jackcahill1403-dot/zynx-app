@@ -82,25 +82,28 @@ EFFORT_PROMPTS = {
 
 MODELS = {
     "glm_air": {
-        "label": "GLM-4.5 Air",
-        "short": "GLM Air",
-        "desc": "Fast, strong instruction following, solid all-around work.",
+        "label": "Vexa",
+        "short": "Vexa",
+        "desc": "A sharp all-rounder for everyday questions, clear explanations, planning, and fast instruction-following.",
+        "logo": "assets/model_logos/Vexa.png",
         "model_id": "openrouter/z-ai/glm-4.5-air:free",
         "key_prefix": "OPENROUTER_GLM_AIR",
         "limits": {"Guest": 1, "Free": 3, "Plus": 5, "Ultra": 8},
     },
     "kimi_k2": {
-        "label": "Kimi K2",
-        "short": "Kimi K2",
-        "desc": "Strong at coding, reasoning, and longer conversations.",
+        "label": "Nyro",
+        "short": "Nyro",
+        "desc": "The deep-work model for coding, reasoning, debugging, and longer conversations that need more structure.",
+        "logo": "assets/model_logos/Nyro.png",
         "model_id": "openrouter/moonshotai/kimi-k2:free",
         "key_prefix": "OPENROUTER_KIMI_K2",
         "limits": {"Guest": 2, "Free": 20, "Plus": 30, "Ultra": 50},
     },
     "mistral_nemo": {
-        "label": "Mistral Nemo",
-        "short": "Nemo",
-        "desc": "Quick responses for chat, creative writing, and lower latency.",
+        "label": "Kiro",
+        "short": "Kiro",
+        "desc": "A quick, lightweight model for chat, creative writing, brainstorming, and low-latency replies.",
+        "logo": "assets/model_logos/Kiro.png",
         "model_id": "openrouter/mistralai/mistral-nemo:free",
         "key_prefix": "OPENROUTER_MISTRAL_NEMO",
         "limits": {"Guest": 3, "Free": 35, "Plus": 50, "Ultra": 75},
@@ -142,6 +145,37 @@ def now():
 def today():
     return datetime.date.today().isoformat()
 
+
+def _asset_data_uri(path):
+    try:
+        import base64
+        from pathlib import Path
+
+        data = Path(path).read_bytes()
+        return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    except Exception:
+        return ""
+
+
+def model_logo_data_uri(model_key):
+    logo = MODELS.get(model_key, {}).get("logo", "")
+    return _asset_data_uri(logo) if logo else ""
+
+
+def model_badge_html(model_key, include_desc=True, include_limit=None):
+    spec = MODELS[model_key]
+    logo = model_logo_data_uri(model_key)
+    logo_html = f'<img src="{logo}" alt="{html.escape(spec["label"])} logo">' if logo else ""
+    desc_html = f'<div class="desc">{html.escape(spec["desc"])}</div>' if include_desc else ""
+    limit_html = f'<div class="limit">{html.escape(str(include_limit))}</div>' if include_limit is not None else ""
+    return (
+        '<div class="zynx-model-row">'
+        '<div class="left">'
+        f'{logo_html}<div><div class="name">{html.escape(spec["label"])}</div>{desc_html}</div>'
+        '</div>'
+        f'{limit_html}'
+        '</div>'
+    )
 
 def wordmark_html(name):
     """Split a wordmark into per-letter spans for the staggered reveal +
@@ -884,6 +918,17 @@ def ui(theme="dark"):
     .zynx-card .price { font-family: var(--serif); font-size: 2.1rem; color: var(--white); line-height: 1; margin: 0.55rem 0 0.1rem; letter-spacing: -0.015em; }
     .zynx-card .per { font-family: var(--mono); font-size: 0.6rem; color: var(--faint); letter-spacing: 0.06em; }
     .zynx-card .feat { font-family: var(--sans); font-size: 0.86rem; color: var(--muted); margin-top: 0.9rem; border-top: 1px solid var(--line); padding-top: 0.75rem; line-height: 1.5; }
+    .zynx-model-meta { display:flex; align-items:center; gap:0.75rem; margin:0.55rem 0 0.2rem; padding:0.55rem 0.65rem; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+    .zynx-model-meta img { width:38px; height:38px; object-fit:contain; border-radius:8px; }
+    .zynx-model-meta .name { font-family:var(--mono); font-size:0.68rem; letter-spacing:0.16em; text-transform:uppercase; color:var(--white); }
+    .zynx-model-meta .desc { font-size:0.76rem; color:var(--muted); line-height:1.35; margin-top:2px; }
+    .zynx-model-list { display:grid; gap:0.55rem; margin:0.8rem 0 1.1rem; }
+    .zynx-model-row { display:flex; align-items:center; justify-content:space-between; gap:0.8rem; border:1px solid var(--line); border-radius:10px; padding:0.55rem 0.65rem; background:var(--surface); }
+    .zynx-model-row .left { display:flex; align-items:center; gap:0.7rem; min-width:0; }
+    .zynx-model-row img { width:34px; height:34px; object-fit:contain; border-radius:8px; flex:0 0 auto; }
+    .zynx-model-row .name { font-weight:600; color:var(--white); line-height:1.1; }
+    .zynx-model-row .desc { color:var(--muted); font-size:0.74rem; line-height:1.3; margin-top:2px; }
+    .zynx-model-row .limit { font-family:var(--mono); color:var(--muted); white-space:nowrap; font-size:0.72rem; }
 
     /* ======================================================
        MISC  (progress / expander)
@@ -3225,17 +3270,10 @@ with st.sidebar:
         rows_html = ""
         for mk in visible_models():
             remaining, limit = model_uses_remaining(user, mk, uses=today_uses)
-            colour = "#6b6b6b" if remaining == 0 else "var(--text)"
-            rows_html += (
-                "<div style='display:flex;justify-content:space-between;"
-                "font-family:var(--mono);font-size:0.66rem;color:var(--muted);padding:2px 0;'>"
-                f"<span>{MODELS[mk]['short']}</span>"
-                f"<span style='color:{colour};'>{remaining}/{limit}</span></div>"
-            )
+            rows_html += model_badge_html(mk, include_desc=False, include_limit=f"{remaining}/{limit}")
         st.markdown(
             "<div class='zynx-label' style='margin:0.3rem 0 0.2rem 0.15rem;'>Today's messages</div>"
-            "<div style='border:1px solid var(--line);border-radius:10px;padding:0.45rem 0.65rem;'>"
-            f"{rows_html}</div>",
+            f"<div class='zynx-model-list'>{rows_html}</div>",
             unsafe_allow_html=True
         )
 
@@ -3381,9 +3419,11 @@ if st.session_state.page == "Plans":
             badge = '<span class="badge">Current</span>' if is_current else ''
 
             feats = "".join(
-                "<div style='display:flex;justify-content:space-between;padding:2px 0;'>"
-                f"<span>{MODELS[mk]['short']}</span>"
-                f"<span style='color:#dcdcdc;'>{MODELS[mk]['limits'][name]}/day</span></div>"
+                model_badge_html(
+                    mk,
+                    include_desc=True,
+                    include_limit=f"{MODELS[mk]['limits'][name]}/day"
+                )
                 for mk in visible_models()
             )
 
@@ -3646,6 +3686,22 @@ with composer:
         if MODELS[k]["short"] == picked:
             model_key = k
             break
+
+    _model_logo = model_logo_data_uri(model_key)
+    _model_logo_html = (
+        f'<img src="{_model_logo}" alt="{html.escape(MODELS[model_key]["label"])} logo">'
+        if _model_logo else ""
+    )
+    st.markdown(
+        '<div class="zynx-model-meta">'
+        f'{_model_logo_html}'
+        '<div>'
+        f'<div class="name">{html.escape(MODELS[model_key]["label"])}</div>'
+        f'<div class="desc">{html.escape(MODELS[model_key]["desc"])}</div>'
+        '</div>'
+        '</div>'
+        unsafe_allow_html=True,
+    )
 
     if user and safe_get(user, "plan") == "Owner":
         meter_text = "unlimited"
