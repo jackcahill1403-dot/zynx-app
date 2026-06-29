@@ -183,7 +183,7 @@ INDEX_HTML = r"""
       --muted: #7a7f87;
       --accent: #1a1a1a;
       --accent-soft: rgba(0,0,0,0.06);
-      --grid-line: rgba(0,0,0,0.04);
+      --grid-line: rgba(0,0,0,0.08);
       --shadow-soft: 0 8px 24px rgba(0,0,0,0.07);
       --shadow-deep: 0 18px 44px rgba(0,0,0,0.14);
       --ring: rgba(0,0,0,0.14);
@@ -199,7 +199,7 @@ INDEX_HTML = r"""
       --muted: #888888;
       --accent: #ffffff;
       --accent-soft: rgba(255,255,255,0.08);
-      --grid-line: rgba(255,255,255,0.028);
+      --grid-line: rgba(255,255,255,0.06);
       --shadow-soft: 0 8px 24px rgba(0,0,0,0.40);
       --shadow-deep: 0 18px 44px rgba(0,0,0,0.62);
       --ring: rgba(255,255,255,0.18);
