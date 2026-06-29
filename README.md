@@ -3,9 +3,9 @@
 A multi-model AI chat app built with Streamlit.
 
 Tiers:
-- **Vexa** - free reasoning/all-rounder for everyday questions, explanations, planning, and fast instruction-following.
-- **Nyro** - free coding-focused model for coding, reasoning, debugging, and longer conversations.
-- **Kiro** - small free quick-chat model for chat, creative writing, brainstorming, and low-latency replies.
+- **Vexa** - free reasoning/all-rounder for everyday questions, explanations, planning, and heavier prompts.
+- **Nyro** - free coding-focused model for debugging, implementation help, and structured technical work.
+- **Kiro** - small free quick-chat model for brainstorming, lightweight writing, and low-latency replies.
 
 ## Run locally
 ```bash
