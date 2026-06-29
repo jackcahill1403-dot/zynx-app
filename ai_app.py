@@ -3693,14 +3693,13 @@ with composer:
         f'<img src="{_model_logo}" alt="{html.escape(MODELS[model_key]["label"])} logo">'
         if _model_logo else ""
     )
-    st.markdown(
+    _model_meta_html = (
         '<div class="zynx-model-meta compact">'
         f'{_model_logo_html}'
         f'<div class="name">{html.escape(MODELS[model_key]["label"])}</div>'
         '</div>'
-        unsafe_allow_html=True,
     )
-
+    st.markdown(_model_meta_html, unsafe_allow_html=True)
     if user and safe_get(user, "plan") == "Owner":
         meter_text = "unlimited"
     else:
